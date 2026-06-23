@@ -1,0 +1,40 @@
+name: board-secretary-compliance-red-team
+display_name: 合规红队
+version: 0.1.0
+entry_id: board-secretary-compliance-red-team
+entry_prompt_code: wb_fbsir_board_secretary_compliance_red_team
+asset_type: compliance-red-team-card
+connector_tool_chain:
+  - skill_whoami
+  - fbs_scene_pack_query
+  - skill_consume
+priority_scope:
+  - P0
+  - P1
+  - P2
+required_interfaces:
+  - resultCard
+  - hostCapabilityRequest
+  - deliveryTask
+  - deliveryTaskboard
+  - opsBoard
+  - regulatorySourceRegistry
+  - scenarioExpansion
+  - personalizationProfile
+scenario_expansion:
+  required_p2_scenarios:
+    - announcement_draft_review
+    - investor_interaction_reply
+    - research_minutes_review
+    - public_opinion_response
+    - three_meetings_process
+    - earnings_guidance_qa
+  profile_segments:
+    - board_secretary
+    - securities_rep
+    - ir_director
+    - cfo_office
+guardrails:
+  automatic_legal_conclusion: false
+  automatic_disclosure_decision: false
+  automatic_publishing: false

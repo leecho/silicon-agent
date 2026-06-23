@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default silicon-agent desktop permissions.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","dialog:default","opener:default","opener:allow-open-path","notification:default"]}}

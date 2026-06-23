@@ -1,0 +1,2 @@
+# 方案B：无内置预置成员；成员由主助手动态生成（dispatch_agent inline spec）。
+# 此目录保留以满足 include_dir! 编译期需求；可后续放可选内置模板。

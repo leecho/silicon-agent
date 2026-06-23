@@ -1,0 +1,11 @@
+{
+  "name": "trading-agent",
+  "displayName": "交易分析团队",
+  "description": "13位专业角色分5阶段协作完成投资分析：技术面、基本面、新闻面、情绪面数据采集 → 多空辩论 → 交易决策 → 三方风险评估 → 最终报告，输出 BUY/SELL/HOLD 建议及完整操作方案",
+  "category": "金融投资",
+  "scenario": "金融投资",
+  "tags": [],
+  "featured": true,
+  "order": 220,
+  "quickPrompts": []
+}

@@ -1,0 +1,20 @@
+use silicon_agent::storage::AppDatabase;
+
+#[test]
+fn fresh_db_reports_ready() {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "siw-health_{}_{}_{}",
+        std::process::id(),
+        seq,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let db = AppDatabase::open(dir.join("app.sqlite3")).expect("open");
+    // app_health 的核心判定：schema_migrations 表存在即 db_ready。
+    assert!(db.table_exists("schema_migrations").expect("ready"));
+    let _ = std::fs::remove_dir_all(dir);
+}

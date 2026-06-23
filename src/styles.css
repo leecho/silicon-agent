@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  仅保留：全局 base/reset、字体、design token 和少量 Tailwind 无法表达的动画 helper。
+  布局壳、侧栏、监控、Composer、列表、卡片、设置项等组件样式一律用 Tailwind 原子类
+  在组件内表达，不写 bespoke class（见 docs/03-development/frontend-engineering-policy.md）。
+*/
+
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--foreground);
+  background: var(--background);
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --background: #ffffff;
+  --foreground: #18181b;
+  --foreground-secondary: #52525b;
+  --foreground-muted: #8a8d91;
+  --surface: var(--background);
+  --card: #f7f7f6;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #1a73e8;
+  --primary-rgb: 26 115 232;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f0ef;
+  --secondary-foreground: #18181b;
+  --muted: #f0f0ef;
+  --muted-foreground: #6f747b;
+  --accent: rgb(0 0 0 / 5%);
+  --accent-foreground: #18181b;
+  --success: #12805c;
+  --success-rgb: 18 128 92;
+  --success-foreground: #ffffff;
+  --success-subtle: rgb(18 128 92 / 10%);
+  --success-border: rgb(18 128 92 / 22%);
+  --warning: #9a5b00;
+  --warning-rgb: 154 91 0;
+  --warning-foreground: #18181b;
+  --warning-subtle: rgb(154 91 0 / 12%);
+  --warning-border: rgb(154 91 0 / 24%);
+  --danger: #b91c1c;
+  --danger-rgb: 185 28 28;
+  --danger-foreground: #ffffff;
+  --danger-subtle: rgb(185 28 28 / 10%);
+  --danger-border: rgb(185 28 28 / 22%);
+  --destructive: #b91c1c;
+  --destructive-rgb: 185 28 28;
+  --destructive-foreground: #ffffff;
+  --border-subtle: rgb(0 0 0 / 6%);
+  --border: rgb(0 0 0 / 10%);
+  --border-strong: rgb(0 0 0 / 16%);
+  --input: rgb(0 0 0 / 12%);
+  --ring: #1a73e8;
+  --ring-rgb: 26 115 232;
+  --radius: 0.5rem;
+
+  --app-font-family:
+    "PingFang SC", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI",
+    sans-serif;
+}
+
+/* ---- 深色主题覆盖（默认浅色）。挂在 documentElement 上，使弹层 portal 也继承。 ---- */
+.theme-dark {
+  color-scheme: dark;
+  --background: #0e0f10;
+  --foreground: #ececee;
+  --foreground-secondary: #b4b8bf;
+  --foreground-muted: #747a83;
+  --surface: #202225;
+  --card: #1a1c1e;
+  --card-foreground: #ececee;
+  --popover: #232527;
+  --popover-foreground: #ececee;
+  --primary: #4c8dff;
+  --primary-rgb: 76 141 255;
+  --primary-foreground: #ffffff;
+  --secondary: #1f2123;
+  --secondary-foreground: #ececee;
+  --muted: #1f2123;
+  --muted-foreground: #a7abb2;
+  --accent: rgb(255 255 255 / 6%);
+  --accent-foreground: #ececee;
+  --success: #58d19a;
+  --success-rgb: 88 209 154;
+  --success-foreground: #0e0f10;
+  --success-subtle: rgb(88 209 154 / 13%);
+  --success-border: rgb(88 209 154 / 26%);
+  --warning: #f2c14e;
+  --warning-rgb: 242 193 78;
+  --warning-foreground: #0e0f10;
+  --warning-subtle: rgb(242 193 78 / 14%);
+  --warning-border: rgb(242 193 78 / 28%);
+  --danger: #f87171;
+  --danger-rgb: 248 113 113;
+  --danger-foreground: #0e0f10;
+  --danger-subtle: rgb(248 113 113 / 13%);
+  --danger-border: rgb(248 113 113 / 28%);
+  --destructive: #f87171;
+  --destructive-rgb: 248 113 113;
+  --destructive-foreground: #0e0f10;
+  --border-subtle: rgb(255 255 255 / 6%);
+  --border: rgb(255 255 255 / 10%);
+  --border-strong: rgb(255 255 255 / 18%);
+  --input: rgb(255 255 255 / 14%);
+  --ring: #4c8dff;
+  --ring-rgb: 76 141 255;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+textarea,
+input,
+select {
+  font: inherit;
+}
+
+@keyframes ui-activity-breathe-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.985);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.015);
+  }
+}
+
+.ui-activity-breathe::before {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  content: "";
+  background:
+    radial-gradient(
+      circle at 18% 20%,
+      color-mix(in srgb, var(--primary) 16%, transparent),
+      transparent 36%
+    ),
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--primary) 10%, transparent),
+      transparent 48%
+    );
+  animation: ui-activity-breathe-pulse 2.6s ease-in-out infinite;
+}
