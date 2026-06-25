@@ -702,6 +702,25 @@ export async function setMaxIterations(n: number): Promise<void> {
   await invoke<void>("set_max_iterations", { n });
 }
 
+/** Agent 人设：身份 + 灵魂；空串表示未设置。 */
+export interface AgentPersona {
+  identity: string;
+  soul: string;
+}
+
+/** 读当前 Agent 人设（身份 + 灵魂）。 */
+export async function getAgentPersona(): Promise<AgentPersona> {
+  return await invoke<AgentPersona>("get_agent_persona");
+}
+
+/** 写 Agent 人设；空串即清除该字段（回退默认人设）。 */
+export async function setAgentPersona(
+  identity: string,
+  soul: string,
+): Promise<void> {
+  await invoke<void>("set_agent_persona", { identity, soul });
+}
+
 export type SubagentExecutionMode = "parallel" | "serial";
 
 /** 读子代理执行方式。 */
