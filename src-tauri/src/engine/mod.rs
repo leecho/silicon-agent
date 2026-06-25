@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::app_settings::AppSettingsStore;
-use crate::context::prompt::system_prompt;
+use crate::context::prompt::{system_prompt, Persona};
 use crate::engine::event::{AgentStreamEvent, StreamEmitter};
 use crate::provider::client::{ModelCallRequest, ModelClient, ModelEvent};
 use crate::provider::message::{ModelMessage, ModelToolCall, ModelToolChoice, ToolSpecForModel};
@@ -336,7 +336,7 @@ impl Engine {
             //    compact 只影响"喂给模型的上下文"：已 compacted 的旧消息以摘要 system 替代，
             //    遍历时跳过；消息本身仍持久化、feed 显示不变。
             let history = self.session.list_messages(session_id)?;
-            let sys = system_prompt(&enabled_skills, &mode, &self.workspace);
+            let sys = system_prompt(&Persona::default(), &enabled_skills, &mode, &self.workspace);
             let mut messages = vec![ModelMessage::system(&sys)];
             if let Some(summary) = self.session.get_compaction_summary(session_id)? {
                 messages.push(ModelMessage::system(&format!(

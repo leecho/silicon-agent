@@ -8,10 +8,22 @@ use crate::skill::types::SkillSummary;
 
 const SYSTEM_PROMPT_BASE: &str = "你是 SiliconAgent，一个有帮助的助手。用简洁清晰的中文回答。";
 
+/// Agent 人设快照：身份(非空时替换默认人设句) + 灵魂(非空时追加「## 人格」段)。两者均可缺省。
+#[derive(Default)]
+pub struct Persona {
+    pub identity: Option<String>,
+    pub soul: Option<String>,
+}
+
 /// 构建系统提示：基础人设 + **当前本地日期时间** + **启用技能（名+简介，渐进式披露）**。
 /// 注入当前时间，避免模型从对话上文里捡到旧日期、把「今天/现在」定位错。
 /// 启用技能仅以名+简介列出；模型需要某技能详情时调 `load_skill(name)` 取全文（省 token）。
-pub fn system_prompt(enabled_skills: &[SkillSummary], mode: &str, workspace: &str) -> String {
+pub fn system_prompt(
+    persona: &Persona,
+    enabled_skills: &[SkillSummary],
+    mode: &str,
+    workspace: &str,
+) -> String {
     let now = chrono::Local::now();
     let weekday = match now.weekday() {
         chrono::Weekday::Mon => "星期一",
@@ -22,9 +34,25 @@ pub fn system_prompt(enabled_skills: &[SkillSummary], mode: &str, workspace: &st
         chrono::Weekday::Sat => "星期六",
         chrono::Weekday::Sun => "星期日",
     };
+    // 人设头：身份非空则替换默认人设句；灵魂非空则紧随其后追加「## 人格」段。
+    let base = persona
+        .identity
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(SYSTEM_PROMPT_BASE);
+    let mut header = base.to_string();
+    if let Some(soul) = persona
+        .soul
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        header.push_str(&format!("\n\n## 人格\n{soul}"));
+    }
     let mut prompt = format!(
         "{}\n\n处理多步骤任务时，先用 update_todos 拆出待办清单并随推进更新状态（同一时刻至多一项 in_progress）；简单问答不必用。\n\n产出文件后用 add_artifact(path, title?, kind?) 登记到侧栏：交付给用户的最终成果（报告/方案/汇总文档）用 kind=\"final\"；为产出成果而写的脚本、中间数据、临时文件用 kind=\"working\"。生成报告的脚本属于 working，不是 final。\n\n当前时间：{} {}（本地时区）。涉及「今天/现在/最近」等时，以此为准，不要依据对话历史里出现的其它日期推断当前时间。",
-        SYSTEM_PROMPT_BASE,
+        header,
         now.format("%Y-%m-%d %H:%M"),
         weekday
     );
@@ -50,25 +78,25 @@ pub fn system_prompt(enabled_skills: &[SkillSummary], mode: &str, workspace: &st
 
 #[cfg(test)]
 mod tests {
-    use super::system_prompt;
+    use super::{system_prompt, Persona};
 
     #[test]
     fn includes_workspace_directory_and_directive() {
-        let p = system_prompt(&[], "normal", "/home/u/.siliconagent/session-x");
+        let p = system_prompt(&Persona::default(), &[], "normal", "/home/u/.siliconagent/session-x");
         assert!(p.contains("/home/u/.siliconagent/session-x"));
         assert!(p.contains("你的工作目录"));
     }
 
     #[test]
     fn empty_workspace_omits_section() {
-        let p = system_prompt(&[], "normal", "");
+        let p = system_prompt(&Persona::default(), &[], "normal", "");
         assert!(!p.contains("你的工作目录"));
     }
 
     #[test]
     fn no_memory_section() {
         // 记忆子系统已移除：system prompt 不应再含记忆段或 remember 引导。
-        let p = system_prompt(&[], "normal", "");
+        let p = system_prompt(&Persona::default(), &[], "normal", "");
         assert!(!p.contains("remember"));
         assert!(!p.contains("长期记忆"));
         assert!(!p.contains("相关记忆"));
@@ -77,10 +105,54 @@ mod tests {
 
     #[test]
     fn plan_mode_injects_plan_section() {
-        let plan = system_prompt(&[], "plan", "");
+        let plan = system_prompt(&Persona::default(), &[], "plan", "");
         assert!(plan.contains("## 计划模式"));
-        let normal = system_prompt(&[], "normal", "");
+        let normal = system_prompt(&Persona::default(), &[], "normal", "");
         assert!(!normal.contains("## 计划模式"));
+    }
+
+    #[test]
+    fn default_persona_keeps_base_unchanged() {
+        // 双 None 人设 ⇒ 仍含默认人设句、不含「## 人格」段（守护零行为变更）。
+        let p = system_prompt(&Persona::default(), &[], "normal", "");
+        assert!(p.contains("你是 SiliconAgent，一个有帮助的助手。"));
+        assert!(!p.contains("## 人格"));
+    }
+
+    #[test]
+    fn identity_replaces_base_sentence() {
+        let persona = Persona {
+            identity: Some("你是小硅，一名严谨的研究助手。".to_string()),
+            soul: None,
+        };
+        let p = system_prompt(&persona, &[], "normal", "");
+        assert!(p.contains("你是小硅，一名严谨的研究助手。"));
+        assert!(!p.contains("你是 SiliconAgent，一个有帮助的助手。"));
+        assert!(!p.contains("## 人格"));
+    }
+
+    #[test]
+    fn soul_appends_personality_section() {
+        let persona = Persona {
+            identity: None,
+            soul: Some("耐心、克制、先问后做。".to_string()),
+        };
+        let p = system_prompt(&persona, &[], "normal", "");
+        assert!(p.contains("## 人格"));
+        assert!(p.contains("耐心、克制、先问后做。"));
+        assert!(p.contains("你是 SiliconAgent，一个有帮助的助手。"));
+    }
+
+    #[test]
+    fn identity_and_soul_both_present_in_order() {
+        let persona = Persona {
+            identity: Some("你是小硅。".to_string()),
+            soul: Some("严谨。".to_string()),
+        };
+        let p = system_prompt(&persona, &[], "normal", "");
+        let id_pos = p.find("你是小硅。").unwrap();
+        let soul_pos = p.find("## 人格").unwrap();
+        assert!(id_pos < soul_pos);
     }
 }
 
