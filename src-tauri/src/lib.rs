@@ -129,6 +129,8 @@ pub fn run() {
             commands::set_max_iterations,
             commands::get_subagent_execution_mode,
             commands::set_subagent_execution_mode,
+            commands::get_agent_persona,
+            commands::set_agent_persona,
             commands::retry_session,
             commands::get_usage_analytics,
             commands::get_session_context_usage,

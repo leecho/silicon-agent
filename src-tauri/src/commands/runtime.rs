@@ -121,6 +121,35 @@ pub fn set_subagent_execution_mode(
     services.app_settings.set_subagent_execution_mode(&mode)
 }
 
+/// Agent 人设 DTO：空串表示未设置（便于前端 textarea 双向绑定）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPersonaDto {
+    pub identity: String,
+    pub soul: String,
+}
+
+/// 读当前 Agent 人设（身份 + 灵魂）。未设置的字段返回空串。
+#[tauri::command]
+pub fn get_agent_persona(services: State<'_, AppState>) -> Result<AgentPersonaDto, String> {
+    Ok(AgentPersonaDto {
+        identity: services.app_settings.get_agent_identity()?.unwrap_or_default(),
+        soul: services.app_settings.get_agent_soul()?.unwrap_or_default(),
+    })
+}
+
+/// 写 Agent 人设。identity/soul 传 None 或空白即清除该字段（回退默认）。
+#[tauri::command]
+pub fn set_agent_persona(
+    services: State<'_, AppState>,
+    identity: Option<String>,
+    soul: Option<String>,
+) -> Result<(), String> {
+    services.app_settings.set_agent_identity(identity.as_deref())?;
+    services.app_settings.set_agent_soul(soul.as_deref())?;
+    Ok(())
+}
+
 /// 手动重试上一轮失败的模型调用：把失败的 partial assistant 标 compacted=1（保留痕迹、
 /// 排除出模型上下文），然后走与 submit 相同的 run 生命周期 resume 重跑。
 #[tauri::command]
