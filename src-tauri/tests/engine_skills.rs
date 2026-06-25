@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::context::prompt::system_prompt;
+use silicon_agent::context::prompt::{system_prompt, Persona};
 use silicon_agent::engine::event::AgentStreamEvent;
 use silicon_agent::engine::Engine;
 use silicon_agent::provider::client::{
@@ -38,7 +38,7 @@ fn sample_summary() -> SkillSummary {
 #[test]
 fn system_prompt_lists_enabled_skills() {
     let s = sample_summary();
-    let prompt = system_prompt(std::slice::from_ref(&s), "normal", "");
+    let prompt = system_prompt(&Persona::default(), std::slice::from_ref(&s), "normal", "");
     assert!(prompt.contains("可用技能"));
     assert!(prompt.contains("weather-style"));
     assert!(prompt.contains("天气回答风格"));
@@ -47,7 +47,7 @@ fn system_prompt_lists_enabled_skills() {
 
 #[test]
 fn system_prompt_without_skills_has_no_section() {
-    let prompt = system_prompt(&[], "normal", "");
+    let prompt = system_prompt(&Persona::default(), &[], "normal", "");
     assert!(!prompt.contains("可用技能"));
 }
 

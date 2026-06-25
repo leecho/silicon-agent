@@ -336,7 +336,16 @@ impl Engine {
             //    compact 只影响"喂给模型的上下文"：已 compacted 的旧消息以摘要 system 替代，
             //    遍历时跳过；消息本身仍持久化、feed 显示不变。
             let history = self.session.list_messages(session_id)?;
-            let sys = system_prompt(&Persona::default(), &enabled_skills, &mode, &self.workspace);
+            // 人设快照：从 app_settings 读身份/灵魂；缺席（未注入 settings）时回退默认人设。
+            let persona = self
+                .app_settings
+                .as_ref()
+                .map(|s| Persona {
+                    identity: s.get_agent_identity().ok().flatten(),
+                    soul: s.get_agent_soul().ok().flatten(),
+                })
+                .unwrap_or_default();
+            let sys = system_prompt(&persona, &enabled_skills, &mode, &self.workspace);
             let mut messages = vec![ModelMessage::system(&sys)];
             if let Some(summary) = self.session.get_compaction_summary(session_id)? {
                 messages.push(ModelMessage::system(&format!(

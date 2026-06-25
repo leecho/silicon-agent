@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use silicon_agent::context::prompt::system_prompt;
+use silicon_agent::context::prompt::{system_prompt, Persona};
 use silicon_agent::engine::Engine;
 use silicon_agent::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
@@ -28,14 +28,14 @@ fn temp_dir() -> std::path::PathBuf {
 /// ① plan 模式 system_prompt 含计划模式指引 + propose_plan；normal 模式不含。
 #[test]
 fn system_prompt_plan_mode_appends_guidance() {
-    let plan = system_prompt(&[], "plan", "");
+    let plan = system_prompt(&Persona::default(), &[], "plan", "");
     assert!(plan.contains("计划模式"), "plan 模式应含「计划模式」段");
     assert!(
         plan.contains("propose_plan"),
         "plan 模式应提到 propose_plan"
     );
 
-    let normal = system_prompt(&[], "normal", "");
+    let normal = system_prompt(&Persona::default(), &[], "normal", "");
     assert!(
         !normal.contains("计划模式"),
         "normal 模式不应含「计划模式」段"
