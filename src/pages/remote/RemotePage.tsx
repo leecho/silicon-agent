@@ -4,14 +4,20 @@ import {
   Bot,
   CheckCircle2,
   CircleSlash,
+  Info,
   KeyRound,
   Loader2,
   MessageSquare,
+  Pause,
+  Play,
+  Plug,
   QrCode,
+  RotateCw,
   Send,
   ShieldCheck,
   Smartphone,
   Trash2,
+  Unplug,
 } from "lucide-react";
 import QRCode from "qrcode";
 import {
@@ -32,7 +38,9 @@ import {
   type RemoteBinding,
   type RemoteChannelConfig,
 } from "../../api/remote";
-import { Badge, Button, Message, Modal, ModalHeader, useMessages } from "../../components/ui";
+import { listSessions } from "../../api";
+import { Badge, Button, Message, Modal, ModalHeader, Tooltip, useMessages } from "../../components/ui";
+import type { SessionInfo } from "../../types";
 
 type ChannelId = "wechat" | "telegram" | "dingtalk" | "feishu";
 type RemoteChannelStatus = RemoteChannelConfig["status"];
@@ -62,25 +70,25 @@ const CHANNELS: ChannelMeta[] = [
   {
     id: "wechat",
     title: "微信（ClawBot）",
-    description: "扫码绑定后即可在微信里与本地 agent 对话。",
+    description: "扫码连接后，可以直接在微信里收发消息。",
     icon: <Smartphone className="h-5 w-5" aria-hidden="true" />,
   },
   {
     id: "telegram",
     title: "Telegram",
-    description: "在 BotFather 创建 bot，填入 token 后连接。",
+    description: "连接后，可以直接在 Telegram 里收发消息。",
     icon: <Send className="h-5 w-5" aria-hidden="true" />,
   },
   {
     id: "dingtalk",
     title: "钉钉",
-    description: "创建企业自建应用并开启 Stream 模式。",
+    description: "连接后，可以直接在钉钉里收发消息。",
     icon: <MessageSquare className="h-5 w-5" aria-hidden="true" />,
   },
   {
     id: "feishu",
     title: "飞书 / Lark",
-    description: "创建企业自建应用并开启长连接订阅「接收消息」。",
+    description: "连接后，可以直接在飞书里收发消息。",
     icon: <Bot className="h-5 w-5" aria-hidden="true" />,
   },
 ];
@@ -134,9 +142,47 @@ function statusTone(status: RemoteChannelStatus): "neutral" | "success" | "warni
   return "neutral";
 }
 
-function RemoteRow({
+function IconActionButton({
+  busy,
   children,
+  disabled,
+  label,
+  onClick,
+  tone = "secondary",
+}: {
+  busy?: boolean;
+  children: ReactNode;
+  disabled?: boolean;
+  label: string;
+  onClick?: () => void;
+  tone?: "primary" | "secondary" | "danger";
+}) {
+  const toneClass =
+    tone === "primary"
+      ? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/15"
+      : tone === "danger"
+        ? "border-destructive/20 bg-destructive/10 text-destructive hover:bg-destructive/15"
+        : "border-border bg-background text-foreground-muted hover:bg-accent hover:text-foreground";
+
+  const button = (
+    <button
+      type="button"
+      aria-label={label}
+      className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-50 ${toneClass}`}
+      disabled={disabled || busy}
+      onClick={onClick}
+      title={label}
+    >
+      {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : children}
+    </button>
+  );
+
+  return <Tooltip content={label}>{button}</Tooltip>;
+}
+
+function RemoteRow({
   connectBusy,
+  isLast,
   lifecycleBusy,
   meta,
   onConnect,
@@ -146,8 +192,8 @@ function RemoteRow({
   onResume,
   status,
 }: {
-  children: ReactNode;
   connectBusy?: boolean;
+  isLast: boolean;
   lifecycleBusy?: "pause" | "resume" | "disconnect";
   meta: ChannelMeta;
   onConnect: () => void;
@@ -162,33 +208,38 @@ function RemoteRow({
   function renderLifecycleActions() {
     if (isConnecting) {
       return (
-        <Button tone="primary" disabled>
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          连接中…
-        </Button>
+        <IconActionButton busy label="连接中" tone="primary">
+          <Loader2 className="h-4 w-4" aria-hidden="true" />
+        </IconActionButton>
       );
     }
 
     if (status === "disconnected") {
       return (
-        <Button tone="primary" onClick={onConnect}>
-          {meta.id === "wechat" && <QrCode className="h-4 w-4" aria-hidden="true" />}
-          连接
-        </Button>
+        <IconActionButton label="连接" onClick={onConnect} tone="primary">
+          <Plug className="h-4 w-4" aria-hidden="true" />
+        </IconActionButton>
       );
     }
 
     if (status === "connected") {
       return (
         <>
-          <Button tone="secondary" onClick={onPause} disabled={lifecycleBusy === "pause"}>
-            {lifecycleBusy === "pause" && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
-            {lifecycleBusy === "pause" ? "暂停中…" : "暂停"}
-          </Button>
-          <Button tone="danger" onClick={onDisconnect} disabled={lifecycleBusy === "disconnect"}>
-            {lifecycleBusy === "disconnect" && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
-            {lifecycleBusy === "disconnect" ? "解除中…" : "解除连接"}
-          </Button>
+          <IconActionButton
+            busy={lifecycleBusy === "pause"}
+            label={lifecycleBusy === "pause" ? "暂停中" : "暂停"}
+            onClick={onPause}
+          >
+            <Pause className="h-4 w-4" aria-hidden="true" />
+          </IconActionButton>
+          <IconActionButton
+            busy={lifecycleBusy === "disconnect"}
+            label={lifecycleBusy === "disconnect" ? "解除中" : "解除连接"}
+            onClick={onDisconnect}
+            tone="danger"
+          >
+            <Unplug className="h-4 w-4" aria-hidden="true" />
+          </IconActionButton>
         </>
       );
     }
@@ -196,56 +247,102 @@ function RemoteRow({
     if (status === "paused") {
       return (
         <>
-          <Button tone="primary" onClick={onResume} disabled={lifecycleBusy === "resume"}>
-            {lifecycleBusy === "resume" && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
-            {lifecycleBusy === "resume" ? "恢复中…" : "恢复连接"}
-          </Button>
-          <Button tone="danger" onClick={onDisconnect} disabled={lifecycleBusy === "disconnect"}>
-            {lifecycleBusy === "disconnect" && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
-            {lifecycleBusy === "disconnect" ? "解除中…" : "解除连接"}
-          </Button>
+          <IconActionButton
+            busy={lifecycleBusy === "resume"}
+            label={lifecycleBusy === "resume" ? "恢复中" : "恢复连接"}
+            onClick={onResume}
+            tone="primary"
+          >
+            <Play className="h-4 w-4" aria-hidden="true" />
+          </IconActionButton>
+          <IconActionButton
+            busy={lifecycleBusy === "disconnect"}
+            label={lifecycleBusy === "disconnect" ? "解除中" : "解除连接"}
+            onClick={onDisconnect}
+            tone="danger"
+          >
+            <Unplug className="h-4 w-4" aria-hidden="true" />
+          </IconActionButton>
         </>
       );
     }
 
     return (
       <>
-        <Button tone="primary" onClick={onConnect}>
-          重新连接
-        </Button>
-        <Button tone="danger" onClick={onDisconnect} disabled={lifecycleBusy === "disconnect"}>
-          {lifecycleBusy === "disconnect" && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
-          {lifecycleBusy === "disconnect" ? "解除中…" : "解除连接"}
-        </Button>
+        <IconActionButton label="重新连接" onClick={onConnect} tone="primary">
+          <RotateCw className="h-4 w-4" aria-hidden="true" />
+        </IconActionButton>
+        <IconActionButton
+          busy={lifecycleBusy === "disconnect"}
+          label={lifecycleBusy === "disconnect" ? "解除中" : "解除连接"}
+          onClick={onDisconnect}
+          tone="danger"
+        >
+          <Unplug className="h-4 w-4" aria-hidden="true" />
+        </IconActionButton>
       </>
     );
   }
 
   return (
-    <section className="rounded-lg border border-border bg-surface p-4">
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-        <div className="flex min-w-0 gap-3">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-card text-foreground-secondary">
-            {meta.icon}
-          </span>
-          <div className="min-w-0">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <h3 className="truncate text-sm font-semibold text-foreground">{meta.title}</h3>
-              <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
-            </div>
-            <p className="mt-1 text-xs leading-5 text-foreground-muted">{meta.description}</p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap justify-end gap-2">
-          {renderLifecycleActions()}
-          <Button tone="secondary" onClick={onDetails}>
-            详情
-          </Button>
-        </div>
+    <li
+      className={`group flex flex-wrap items-center gap-3.5 px-4 py-4 transition-colors hover:bg-accent ${
+        isLast ? "" : "border-b border-border-subtle"
+      }`}
+    >
+      <div
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-border bg-background shadow-sm transition-colors ${
+          status === "connected" ? "text-primary" : "text-foreground-muted"
+        }`}
+      >
+        {meta.icon}
       </div>
 
-      <div className="mt-4 border-t border-border-subtle pt-4">{children}</div>
+      <button type="button" className="min-w-0 flex-1 text-left" onClick={onDetails}>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h3 className="truncate font-semibold text-foreground">{meta.title}</h3>
+          <Badge className="px-1.5 py-0 text-[10px] leading-4" tone={statusTone(status)}>
+            {statusLabel(status)}
+          </Badge>
+        </div>
+        <p className="mt-0.5 line-clamp-1 text-xs text-foreground-secondary">{meta.description}</p>
+      </button>
+
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        {renderLifecycleActions()}
+        <IconActionButton label="详情" onClick={onDetails}>
+          <Info className="h-4 w-4" aria-hidden="true" />
+        </IconActionButton>
+      </div>
+    </li>
+  );
+}
+
+function DialogTitle({ meta, title }: { meta: ChannelMeta; title: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-border bg-background text-foreground-secondary shadow-sm">
+        {meta.icon}
+      </span>
+      <div className="min-w-0">
+        <h2 className="truncate text-sm font-semibold text-foreground">{title}</h2>
+        <p className="mt-1 text-xs text-foreground-muted">{meta.description}</p>
+      </div>
+    </div>
+  );
+}
+
+function DialogSection({
+  children,
+  title,
+}: {
+  children: ReactNode;
+  title: string;
+}) {
+  return (
+    <section className="grid gap-3">
+      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      {children}
     </section>
   );
 }
@@ -302,22 +399,20 @@ function ChannelConnectModal({
   const reconnecting = mode === "reconnect";
 
   return (
-    <Modal className="w-[400px]" open={open} onClose={onClose} title={`${meta.title} 连接`}>
-      <ModalHeader onClose={onClose}>
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-card text-foreground-secondary">
-            {meta.icon}
-          </span>
-          <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold text-foreground">
-              {reconnecting ? `重新连接 ${meta.title}` : `连接 ${meta.title}`}
-            </h2>
-            <p className="mt-1 text-xs text-foreground-muted">{meta.description}</p>
-          </div>
-        </div>
-      </ModalHeader>
+    <Modal
+      className="max-w-[420px] overflow-hidden"
+      open={open}
+      onClose={onClose}
+      title={`${meta.title} 连接`}
+      padding="none"
+    >
+      <div className="border-b border-border bg-surface px-5 py-3">
+        <ModalHeader onClose={onClose}>
+          <DialogTitle meta={meta} title={reconnecting ? `重新连接 ${meta.title}` : `连接 ${meta.title}`} />
+        </ModalHeader>
+      </div>
 
-      <div className="mt-5">
+      <div className="max-h-[70vh] overflow-auto p-5">
         {meta.id === "wechat" && (
           <div className="grid gap-4">
             <WechatConnectPanel mode={mode} pairing={pairing} />
@@ -337,9 +432,9 @@ function ChannelConnectModal({
               type="password"
               value={tgToken}
               onChange={(e) => onUpdateTgToken(e.target.value)}
-              placeholder="123456:ABC-DEF…（BotFather token）"
+              placeholder="请输入 Telegram 连接口令"
             />
-            <StateMessage state={tgState} successText="已连接。给你的 Telegram bot 发条消息试试。" />
+            <StateMessage state={tgState} successText="已连接。现在可以在 Telegram 里发消息试试。" />
             <div className="flex justify-end">
               <Button
                 tone="primary"
@@ -355,16 +450,16 @@ function ChannelConnectModal({
 
         {meta.id === "dingtalk" && (
           <div className="grid gap-4">
-            <div className="grid gap-3 md:grid-cols-1">
-              <TextInput value={dtKey} onChange={(e) => onUpdateDtKey(e.target.value)} placeholder="AppKey" />
+            <div className="grid gap-3">
+              <TextInput value={dtKey} onChange={(e) => onUpdateDtKey(e.target.value)} placeholder="请输入钉钉应用编号" />
               <TextInput
                 type="password"
                 value={dtSecret}
                 onChange={(e) => onUpdateDtSecret(e.target.value)}
-                placeholder="AppSecret"
+                placeholder="请输入钉钉应用密钥"
               />
             </div>
-            <StateMessage state={dtState} successText="已连接。给你的钉钉 bot 发条消息试试。" />
+            <StateMessage state={dtState} successText="已连接。现在可以在钉钉里发消息试试。" />
             <div className="flex justify-end">
               <Button
                 tone="primary"
@@ -380,16 +475,16 @@ function ChannelConnectModal({
 
         {meta.id === "feishu" && (
           <div className="grid gap-4">
-            <div className="grid gap-3 md:grid-cols-1">
-              <TextInput value={fsId} onChange={(e) => onUpdateFsId(e.target.value)} placeholder="App ID（cli_…）" />
+            <div className="grid gap-3">
+              <TextInput value={fsId} onChange={(e) => onUpdateFsId(e.target.value)} placeholder="请输入飞书应用编号" />
               <TextInput
                 type="password"
                 value={fsSecret}
                 onChange={(e) => onUpdateFsSecret(e.target.value)}
-                placeholder="App Secret"
+                placeholder="请输入飞书应用密钥"
               />
             </div>
-            <StateMessage state={fsState} successText="已连接。给你的飞书 bot 发条消息试试。" />
+            <StateMessage state={fsState} successText="已连接。现在可以在飞书里发消息试试。" />
             <div className="flex justify-end">
               <Button
                 tone="primary"
@@ -422,58 +517,61 @@ function ChannelDetailModal({
   bindings,
   meta,
   onClose,
+  onOpenSession,
   onRemovePeer,
   open,
   peers,
+  sessions,
 }: {
   bindings: RemoteBinding[];
   meta: ChannelMeta | null;
   onClose: () => void;
+  onOpenSession: (sessionId: string) => void;
   onRemovePeer: (peer: AllowedPeer) => void;
   open: boolean;
   peers: AllowedPeer[];
+  sessions: SessionInfo[];
 }) {
   if (!meta) return null;
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
 
   return (
-    <Modal className="max-w-[400px]" open={open} onClose={onClose} title={`${meta.title} 详情`}>
-      <ModalHeader onClose={onClose}>
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-card text-foreground-secondary">
-            {meta.icon}
-          </span>
-          <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold text-foreground">{meta.title}</h2>
-            <p className="mt-1 text-xs text-foreground-muted">查看该渠道的绑定联系人和会话映射。</p>
-          </div>
-        </div>
-      </ModalHeader>
+    <Modal
+      className="max-w-[440px] overflow-hidden"
+      open={open}
+      onClose={onClose}
+      title={`${meta.title} 详情`}
+      padding="none"
+    >
+      <div className="border-b border-border bg-surface px-5 py-3">
+        <ModalHeader onClose={onClose}>
+          <DialogTitle meta={meta} title={meta.title} />
+        </ModalHeader>
+      </div>
 
-      <div className="mt-5 grid gap-4 grid-cols-1">
-        <section>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-foreground">绑定联系人</h3>
-            <Badge tone="info">{peers.length} 个</Badge>
-          </div>
+      <div className="grid max-h-[70vh] content-start gap-5 overflow-auto p-5">
+        <DialogSection title="可使用的人">
           {peers.length === 0 ? (
             <EmptyState icon={<CircleSlash className="h-5 w-5" aria-hidden="true" />}>
-              暂无联系人。连接后给 bot 发一条消息即可自动认领。
+              暂无联系人。连接后，对方发来消息就会显示在这里。
             </EmptyState>
           ) : (
             <ul className="flex max-h-72 flex-col gap-2 overflow-auto pr-1">
               {peers.map((peer) => (
                 <li
                   key={`${peer.channel}/${peer.peerId}`}
-                  className="group flex min-w-0 items-center gap-3 rounded-lg border border-border-subtle bg-card px-3 py-2.5"
+                  className="group flex min-w-0 items-center gap-3 rounded-lg border border-border-subtle bg-surface px-3 py-2.5"
                 >
                   <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-foreground-muted">
                     <ShieldCheck className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-foreground">
-                      {peer.label ?? peer.peerId}
+                      {peer.label ?? "联系人"}
                     </div>
-                    <div className="mt-1 truncate text-[11px] text-foreground-muted">{peer.peerId}</div>
+                    <div className="mt-1 truncate text-[11px] text-foreground-muted">
+                      已授权使用
+                    </div>
                   </div>
                   <button
                     type="button"
@@ -487,59 +585,68 @@ function ChannelDetailModal({
               ))}
             </ul>
           )}
-        </section>
+        </DialogSection>
 
-        <section>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-foreground">会话映射</h3>
-            <Badge tone="info">{bindings.length} 条</Badge>
-          </div>
+        <DialogSection title="关联对话">
           {bindings.length === 0 ? (
             <EmptyState icon={<KeyRound className="h-5 w-5" aria-hidden="true" />}>
-              暂无会话映射。远程联系人开始对话后会在这里显示。
+              暂无关联对话。开始聊天后会在这里显示。
             </EmptyState>
           ) : (
             <ul className="flex max-h-72 flex-col gap-2 overflow-auto pr-1">
-              {bindings.map((binding) => (
-                <li
-                  key={`${binding.channel}/${binding.peerId}`}
-                  className="flex min-w-0 items-center gap-3 rounded-lg border border-border-subtle bg-card px-3 py-2.5"
-                >
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-foreground-muted">
-                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-medium text-foreground-secondary">
-                      {binding.peerId}
+              {bindings.map((binding) => {
+                const session = sessionsById.get(binding.sessionId);
+                const title = session?.title?.trim() || "未命名会话";
+                return (
+                  <li
+                    key={`${binding.channel}/${binding.peerId}`}
+                    className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-lg border border-border-subtle bg-surface px-3 py-2.5 transition hover:border-border hover:bg-accent"
+                  >
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-foreground-muted">
+                      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-start gap-2">
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 text-left"
+                          onClick={() => {
+                            onClose();
+                            onOpenSession(binding.sessionId);
+                          }}
+                        >
+                          <span className="block truncate text-sm font-medium text-foreground">{title}</span>
+                          <span className="mt-1 block truncate text-[11px] text-foreground-muted">
+                            点击进入这个会话
+                          </span>
+                        </button>
+                        {binding.pendingKind && (
+                          <Badge tone="warning" className="shrink-0">
+                            等待确认
+                          </Badge>
+                        )}
+                      </div>
                     </div>
-                    <div className="mt-1 truncate text-[11px] text-foreground-muted">
-                      会话 {binding.sessionId.slice(0, 12)}…
-                    </div>
-                  </div>
-                  {binding.pendingKind && (
-                    <Badge tone="warning" className="shrink-0">
-                      待确认：{binding.pendingKind}
-                    </Badge>
-                  )}
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
-        </section>
+        </DialogSection>
       </div>
     </Modal>
   );
 }
 
 /**
- * 远程接入设置：微信（ClawBot 扫码绑定）/ Telegram（BotFather token 连接），
- * 让你在 IM 里直接和本地 agent 对话。连接后第一个给 bot 发消息的人即被认作 owner。
+ * 聊天渠道设置：让用户在常用聊天工具里直接对话。
  */
-export function RemotePage() {
+export function RemotePage({ onOpenSession }: { onOpenSession: (sessionId: string) => void }) {
   const messages = useMessages();
   const [channels, setChannels] = useState<RemoteChannelConfig[]>([]);
   const [allowlist, setAllowlist] = useState<AllowedPeer[]>([]);
   const [bindings, setBindings] = useState<RemoteBinding[]>([]);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [connectChannel, setConnectChannel] = useState<ChannelId | null>(null);
   const [detailChannel, setDetailChannel] = useState<ChannelId | null>(null);
   const [lifecycleAction, setLifecycleAction] = useState<{
@@ -597,14 +704,16 @@ export function RemotePage() {
   }
 
   async function reload() {
-    const [nextChannels, nextAllowlist, nextBindings] = await Promise.all([
+    const [nextChannels, nextAllowlist, nextBindings, nextSessions] = await Promise.all([
       listRemoteChannels(),
       listRemoteAllowlist(),
       listRemoteBindings(),
+      listSessions(),
     ]);
     setChannels(nextChannels);
     setAllowlist(nextAllowlist);
     setBindings(nextBindings);
+    setSessions(nextSessions);
   }
 
   useEffect(() => {
@@ -646,7 +755,7 @@ export function RemotePage() {
   async function disconnectChannel(channel: ChannelId) {
     const title = channelTitle(channel);
     const ok = await messages.confirm({
-      title: "解除远程连接",
+      title: "解除聊天连接",
       message: `确定解除「${title}」连接吗？将停止该渠道连接并清除连接配置，之后需要重新连接才能继续使用。`,
       tone: "warning",
       confirmText: "解除连接",
@@ -666,8 +775,8 @@ export function RemotePage() {
   async function pauseChannel(channel: ChannelId) {
     const title = channelTitle(channel);
     const ok = await messages.confirm({
-      title: "暂停远程连接",
-      message: `确定暂停「${title}」吗？暂停后远程消息会收到暂停提示，不会进入 Agent；你可以稍后恢复连接。`,
+      title: "暂停聊天连接",
+      message: `确定暂停「${title}」吗？暂停后，这个渠道收到的新消息不会继续处理；你可以稍后恢复连接。`,
       tone: "warning",
       confirmText: "暂停",
     });
@@ -725,59 +834,39 @@ export function RemotePage() {
         {/* 头部 */}
         <div className="mb-6 mt-4 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-foreground">IM渠道</h1>
+            <h1 className="text-xl font-semibold text-foreground">聊天渠道</h1>
             <p className="mt-1 text-xs text-foreground-muted">
-              管理 IM 渠道连接、授权联系人和远程会话映射。
+              在常用聊天工具里接收和回复任务消息。
             </p>
           </div>
         </div>
-        <section className="flex flex-col gap-3" aria-label="IM渠道">
-        {CHANNELS.map((meta) => {
-          const status = channelStatus(meta.id);
-          const channelPeers = allowlist.filter((peer) => peer.channel === meta.id);
-          const channelBindings = bindings.filter((binding) => binding.channel === meta.id);
-          const config = channelConfig(meta.id);
-          return (
-            <RemoteRow
-              key={meta.id}
-              connectBusy={
-                (meta.id === "wechat" && pairing.kind === "loading") ||
-                (meta.id === "telegram" && tgState.kind === "connecting") ||
-                (meta.id === "dingtalk" && dtState.kind === "connecting") ||
-                (meta.id === "feishu" && fsState.kind === "connecting")
-              }
-              lifecycleBusy={lifecycleAction?.channel === meta.id ? lifecycleAction.kind : undefined}
-              meta={meta}
-              onConnect={() => setConnectChannel(meta.id)}
-              onDetails={() => setDetailChannel(meta.id)}
-              onDisconnect={() => disconnectChannel(meta.id)}
-              onPause={() => pauseChannel(meta.id)}
-              onResume={() => resumeChannel(meta.id)}
-              status={status}
-            >
-              <div className="grid gap-2 text-xs text-foreground-muted md:grid-cols-4">
-                <div>
-                  <span className="font-medium text-foreground-secondary">绑定联系人</span>
-                  <span className="ml-2">{channelPeers.length} 个</span>
-                </div>
-                <div>
-                  <span className="font-medium text-foreground-secondary">会话映射</span>
-                  <span className="ml-2">{channelBindings.length} 条</span>
-                </div>
-                <div className="min-w-0 truncate">
-                  <span className="font-medium text-foreground-secondary">更新时间</span>
-                  <span className="ml-2">{config?.updatedAt ?? "尚未连接"}</span>
-                </div>
-                <div className="min-w-0 truncate">
-                  <span className="font-medium text-foreground-secondary">最近错误</span>
-                  <span className="ml-2">{config?.lastError ?? "无"}</span>
-                </div>
-              </div>
-            </RemoteRow>
-          );
-        })}
+        <ul className="overflow-hidden rounded-lg border border-border-subtle bg-surface" aria-label="聊天渠道">
+          {CHANNELS.map((meta, index) => {
+            const status = channelStatus(meta.id);
+            return (
+              <RemoteRow
+                key={meta.id}
+                connectBusy={
+                  (meta.id === "wechat" && pairing.kind === "loading") ||
+                  (meta.id === "telegram" && tgState.kind === "connecting") ||
+                  (meta.id === "dingtalk" && dtState.kind === "connecting") ||
+                  (meta.id === "feishu" && fsState.kind === "connecting")
+                }
+                isLast={index === CHANNELS.length - 1}
+                lifecycleBusy={lifecycleAction?.channel === meta.id ? lifecycleAction.kind : undefined}
+                meta={meta}
+                onConnect={() => setConnectChannel(meta.id)}
+                onDetails={() => setDetailChannel(meta.id)}
+                onDisconnect={() => disconnectChannel(meta.id)}
+                onPause={() => pauseChannel(meta.id)}
+                onResume={() => resumeChannel(meta.id)}
+                status={status}
+              />
+            );
+          })}
+        </ul>
 
-      <ChannelConnectModal
+        <ChannelConnectModal
           dtKey={dtKey}
           dtSecret={dtSecret}
           dtState={dtState}
@@ -806,11 +895,12 @@ export function RemotePage() {
           bindings={detailBindings}
           meta={detailMeta}
           onClose={() => setDetailChannel(null)}
+          onOpenSession={onOpenSession}
           onRemovePeer={(peer) => removeRemotePeer(peer.channel, peer.peerId).then(() => reload())}
           open={detailChannel !== null}
           peers={detailPeers}
+          sessions={sessions}
         />
-      </section>
       </div>
 
     </div>
@@ -836,19 +926,19 @@ function WechatConnectPanel({
 
   if (pairing.kind === "qr") {
     return (
-      <div className="grid gap-3 rounded-lg border border-border bg-background p-3 sm:grid-cols-[auto_minmax(0,1fr)]">
+      <div className="grid justify-items-center gap-3 rounded-lg border border-border bg-background p-5 text-center">
         {pairing.image ? (
           <img
             src={pairing.image}
             alt="微信绑定二维码"
-            className="h-36 w-36 rounded-lg border border-border-subtle bg-white p-2"
+            className="h-44 w-44 rounded-lg border border-border-subtle bg-white p-2"
           />
         ) : (
-          <div className="max-h-36 min-w-0 overflow-auto break-all rounded-lg border border-border-subtle bg-card p-3 text-xs text-foreground-secondary">
+          <div className="max-h-44 min-w-0 overflow-auto break-all rounded-lg border border-border-subtle bg-card p-3 text-xs text-foreground-secondary">
             {pairing.code}
           </div>
         )}
-        <div className="flex min-w-0 flex-col justify-center gap-2">
+        <div className="flex min-w-0 flex-col items-center justify-center gap-2">
           <Badge tone={pairing.phase === "scanned" ? "running" : "info"} className="w-fit">
             {PHASE_LABEL[pairing.phase]}
           </Badge>
@@ -861,7 +951,7 @@ function WechatConnectPanel({
   if (pairing.kind === "done") {
     return (
       <Message tone="success" className="text-xs leading-5">
-        绑定成功。给你的微信 bot 发条消息试试。
+        绑定成功。现在可以在微信里发消息试试。
       </Message>
     );
   }
@@ -879,7 +969,7 @@ function WechatConnectPanel({
       <p className="text-xs leading-5 text-foreground-muted">
         {mode === "reconnect"
           ? "当前连接异常。可重新获取二维码完成连接。"
-          : "点击右侧连接按钮获取二维码。绑定后，第一个给 bot 发消息的联系人会自动成为 owner。"}
+          : "点击右侧连接按钮获取二维码。连接后即可在微信里收发消息。"}
       </p>
     </div>
   );

@@ -279,7 +279,7 @@ function AppShellContent({
     ),
     session: <SessionArea />,
     skills: <SkillsPage />,
-    remote: <RemotePage />,
+    remote: <RemotePage onOpenSession={(sessionId) => onNavigate({ section: "session", sessionId })} />,
   };
 
   useEffect(() => {
