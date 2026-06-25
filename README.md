@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 中文
 
-Silicon Agent 是一款开源的 AI Agent 桌面客户端。它基于 Tauri 2 打包，使用系统 WebView 与 Rust 后端，不内置 Chromium，安装包体积和运行时占用通常显著小于 Electron 应用。它以单会话 Agent 循环（多轮推理、流式输出、工具调用、自动上下文压缩）为核心，接入你自己的 OpenAI-compatible 模型服务，配套一组聚焦的内置工具、基于文件的技能系统，以及可选的 IM 远程渠道接入。目标是提供一个低成本、可自托管、本地运行的 Agent，让它直接面向你的机器与文件工作。
+Silicon Agent 是一款开源的 AI Agent 桌面客户端。（本地客户端小龙虾）它基于 Tauri 2 打包，使用系统 WebView 与 Rust 后端，不内置 Chromium，安装包体积和运行时占用通常显著小于 Electron 应用。它以单会话 Agent 循环（多轮推理、流式输出、工具调用、自动上下文压缩）为核心，接入你自己的 OpenAI-compatible 模型服务，配套一组聚焦的内置工具、基于文件的技能系统，以及可选的 IM 远程渠道接入。目标是提供一个低成本、可自托管、本地运行的 Agent，让它直接面向你的机器与文件工作。
 
 ## 功能特性
 
