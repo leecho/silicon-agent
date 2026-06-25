@@ -3,6 +3,7 @@ import { WindowDragRegion } from "../../components/layout/WindowDragRegion";
 import { getSettingsTab, settingsTabs, type SettingsTabId } from "./settingsTabs";
 import { ProviderSection } from "./sections/ProviderSection";
 import { PreferencesSection } from "./sections/PreferencesSection";
+import { PersonaSection } from "./sections/PersonaSection";
 import { AdvanceConfigSection } from "./sections/AdvanceConfigSection";
 import { UsageAnalysisSection } from "./sections/UsageAnalysisSection";
 import { CallLogSection } from "./sections/CallLogSection";
@@ -95,6 +96,7 @@ export function SettingsPage({
           {activeTab === "usage-analysis" && <UsageAnalysisSection />}
           {activeTab === "call-log" && <CallLogSection />}
           {activeTab === "preferences" && <PreferencesSection />}
+          {activeTab === "agent-persona" && <PersonaSection />}
         </div>
       </div>
     </main>

@@ -3,7 +3,8 @@ export type SettingsTabId =
   | "model-provider"
   | "usage-analysis"
   | "call-log"
-  | "preferences";
+  | "preferences"
+  | "agent-persona";
 
 export interface SettingsTabItem {
   id: SettingsTabId;
@@ -17,6 +18,12 @@ export const settingsTabs: SettingsTabItem[] = [
     id: "preferences",
     label: "常规",
     description: "主题与新会话默认权限",
+    group: "基础",
+  },
+  {
+    id: "agent-persona",
+    label: "人设",
+    description: "自定义 Agent 的身份与灵魂（留空则用默认人设）",
     group: "基础",
   },
   {
