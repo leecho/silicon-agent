@@ -221,6 +221,32 @@ impl AppSettingsStore {
         }
     }
 
+    /// 读 Agent 身份（人设）；未设置或纯空白返回 None（→ system_prompt 回退默认人设句）。
+    pub fn get_agent_identity(&self) -> Result<Option<String>, String> {
+        Ok(self.get_raw("agent_identity")?.filter(|s| !s.trim().is_empty()))
+    }
+
+    /// 写 Agent 身份；None/空白 = 清除（回退默认人设句）。
+    pub fn set_agent_identity(&self, value: Option<&str>) -> Result<(), String> {
+        match value.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(v) => self.set_raw("agent_identity", v),
+            None => self.delete_raw("agent_identity"),
+        }
+    }
+
+    /// 读 Agent 灵魂（性格/价值观/语气）；未设置或纯空白返回 None。
+    pub fn get_agent_soul(&self) -> Result<Option<String>, String> {
+        Ok(self.get_raw("agent_soul")?.filter(|s| !s.trim().is_empty()))
+    }
+
+    /// 写 Agent 灵魂；None/空白 = 清除。
+    pub fn set_agent_soul(&self, value: Option<&str>) -> Result<(), String> {
+        match value.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(v) => self.set_raw("agent_soul", v),
+            None => self.delete_raw("agent_soul"),
+        }
+    }
+
     /// 子代理执行方式：parallel（同轮并行启动）| serial（同父会话按创建顺序逐个启动）。
     /// 缺省 parallel，保持既有行为。
     pub fn get_subagent_execution_mode(&self) -> Result<String, String> {
@@ -362,6 +388,31 @@ mod tests {
         s.set_aux_model_id(Some("mdl_aux")).unwrap();
         s.set_aux_model_id(None).unwrap();
         assert_eq!(s.get_aux_model_id().unwrap(), None);
+    }
+
+    #[test]
+    fn agent_persona_round_trip_and_clear() {
+        let s = temp_store();
+        // 缺省均为 None
+        assert_eq!(s.get_agent_identity().unwrap(), None);
+        assert_eq!(s.get_agent_soul().unwrap(), None);
+        // 往返
+        s.set_agent_identity(Some("你是小硅，一名严谨的研究助手")).unwrap();
+        s.set_agent_soul(Some("耐心、克制、先问后做")).unwrap();
+        assert_eq!(
+            s.get_agent_identity().unwrap(),
+            Some("你是小硅，一名严谨的研究助手".to_string())
+        );
+        assert_eq!(
+            s.get_agent_soul().unwrap(),
+            Some("耐心、克制、先问后做".to_string())
+        );
+        // 纯空白等同清除 → 读回 None
+        s.set_agent_identity(Some("   ")).unwrap();
+        assert_eq!(s.get_agent_identity().unwrap(), None);
+        // None 清除
+        s.set_agent_soul(None).unwrap();
+        assert_eq!(s.get_agent_soul().unwrap(), None);
     }
 
     #[test]
