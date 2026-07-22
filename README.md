@@ -1,12 +1,12 @@
 <div align="center">
 
-# silicon-worker（硅工）
+# Silicon Worker · 硅基动力
 
 **一个以「低安装、低配置、低授权、低使用成本」为核心目标的本地 Agent 桌面客户端**
 
 Tauri 2 · Rust · React 18 + TypeScript · Vite · Tailwind · 本地 SQLite
 
-[English](README.en.md) · [发布说明](RELEASING.md) · [贡献指南](CONTRIBUTING.md)
+[官网 www.silicower.com](https://www.silicower.com) · [English](README.en.md) · [发布说明](RELEASING.md) · [贡献指南](CONTRIBUTING.md)
 
 </div>
 
@@ -237,5 +237,5 @@ silicon-worker/
 ---
 
 <div align="center">
-<sub>silicon-worker · 让 Agent 装完即用、数据留在本机</sub>
+<sub>Silicon Worker · 硅基动力 · <a href="https://www.silicower.com">www.silicower.com</a> · 让 Agent 装完即用、数据留在本机</sub>
 </div>

@@ -1,12 +1,12 @@
 <div align="center">
 
-# silicon-worker
+# Silicon Worker · 硅基动力
 
 **A local-first AI Agent desktop client built around one goal: minimal install, config, authorization, and day-to-day cost.**
 
 Tauri 2 · Rust · React 18 + TypeScript · Vite · Tailwind · local SQLite
 
-[中文](README.md) · [Releasing](RELEASING.md) · [Contributing](CONTRIBUTING.md)
+[Website www.silicower.com](https://www.silicower.com) · [中文](README.md) · [Releasing](RELEASING.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -170,5 +170,5 @@ This project is licensed under the **[PolyForm Noncommercial License 1.0.0](LICE
 ---
 
 <div align="center">
-<sub>silicon-worker · install-and-go agents, data on your machine</sub>
+<sub>Silicon Worker · 硅基动力 · <a href="https://www.silicower.com">www.silicower.com</a> · install-and-go agents, data on your machine</sub>
 </div>

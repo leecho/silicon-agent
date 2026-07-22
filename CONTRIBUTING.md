@@ -1,6 +1,6 @@
 # 贡献指南 · Contributing
 
-感谢你对 silicon-worker 的关注！本文件说明如何参与，以及贡献者授权（CLA）的约定。
+感谢你对 Silicon Worker（硅基动力）的关注！本文件说明如何参与，以及贡献者授权（CLA）的约定。
 
 > English speakers: an English summary follows each section.
 
