@@ -1,4 +1,4 @@
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::storage::AppDatabase;
 
 #[test]
 fn fresh_db_reports_ready() {

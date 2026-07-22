@@ -1,7 +1,7 @@
 // 子运行字段往返：建会话 → 读回 SessionInfo 的父子链/agent 字段（P0 数据模型）。
 // 顶层会话四字段默认 None，schema/映射正确、向后兼容。
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 fn store() -> SessionStore {
@@ -234,7 +234,7 @@ fn append_stopped_marker_renders_as_divider_source() {
 fn classify_drives_parked_converge_then_store_settles() {
     // 统一 reconcile：停泊 + 无活子 → 分类判定 ConvergeParked；其 DB 收敛由 cancel_dangling_dispatches 完成
     //（回填悬空 dispatch + 清 awaiting）。此处验证「分类决策 + store 收敛原语」两段拼起来的契约。
-    use silicon_agent::run::reconcile::{classify_reconcile, ReconcileAction, ReconcileInputs};
+    use silicon_worker::run::reconcile::{classify_reconcile, ReconcileAction, ReconcileInputs};
     let parked_no_live = ReconcileInputs {
         is_live: false,
         any_child_live: false,

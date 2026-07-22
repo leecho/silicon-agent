@@ -10,12 +10,15 @@ use tauri::{
 use crate::app_state::AppState;
 
 use self::menu::{
-    parse_tray_item_id, session_item_id, split_recent_sessions, truncate_menu_title, TrayAction,
-    TrayEntitySplit, TrayMenuSnapshot, TraySession,
+    agent_item_id, parse_tray_item_id, project_item_id, session_item_id, split_entities,
+    split_recent_sessions, truncate_menu_title, TrayAction, TrayEntity, TrayEntitySplit,
+    TrayMenuSnapshot, TraySession,
 };
 
 pub const MAIN_WINDOW_LABEL: &str = "main";
 pub const TRAY_EVENT_NEW_TASK: &str = "tray_new_task";
+pub const TRAY_EVENT_OPEN_PROJECT: &str = "tray_open_project";
+pub const TRAY_EVENT_OPEN_AGENT: &str = "tray_open_agent";
 pub const TRAY_EVENT_OPEN_SESSION: &str = "tray_open_session";
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -33,6 +36,14 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 
 fn empty_snapshot() -> TrayMenuSnapshot {
     TrayMenuSnapshot {
+        projects: TrayEntitySplit {
+            primary: Vec::new(),
+            more: Vec::new(),
+        },
+        agents: TrayEntitySplit {
+            primary: Vec::new(),
+            more: Vec::new(),
+        },
         sessions: TrayEntitySplit {
             primary: Vec::new(),
             more: Vec::new(),
@@ -41,6 +52,26 @@ fn empty_snapshot() -> TrayMenuSnapshot {
 }
 
 fn snapshot_from_state(state: &AppState) -> Result<TrayMenuSnapshot, String> {
+    let projects = state
+        .projects
+        .list()?
+        .into_iter()
+        .map(|project| TrayEntity {
+            id: project.id,
+            title: project.name,
+        })
+        .collect::<Vec<_>>();
+
+    let agents = state
+        .agents
+        .list()?
+        .into_iter()
+        .map(|agent| TrayEntity {
+            id: agent.id,
+            title: agent.display_name.unwrap_or(agent.name),
+        })
+        .collect::<Vec<_>>();
+
     let sessions = state
         .session
         .list_sessions()?
@@ -59,6 +90,8 @@ fn snapshot_from_state(state: &AppState) -> Result<TrayMenuSnapshot, String> {
         .collect::<Vec<_>>();
 
     Ok(TrayMenuSnapshot {
+        projects: split_entities(projects),
+        agents: split_entities(agents),
         sessions: split_recent_sessions(sessions),
     })
 }
@@ -102,14 +135,22 @@ fn build_tray_menu(
     snapshot: &TrayMenuSnapshot,
 ) -> tauri::Result<Menu<tauri::Wry>> {
     let new_task = MenuItemBuilder::with_id(menu::TRAY_NEW_TASK_ID, "新任务").build(app)?;
-    let show = MenuItemBuilder::with_id(menu::TRAY_SHOW_ID, "打开 SiliconAgent").build(app)?;
-    let quit = MenuItemBuilder::with_id(menu::TRAY_QUIT_ID, "退出 SiliconAgent").build(app)?;
+    let show = MenuItemBuilder::with_id(menu::TRAY_SHOW_ID, "打开 Silicon Worker").build(app)?;
+    let quit = MenuItemBuilder::with_id(menu::TRAY_QUIT_ID, "退出 Silicon Worker").build(app)?;
 
+    let project_menu =
+        build_split_submenu(app, "项目", &snapshot.projects, project_item_id, "暂无项目")?;
+    let agent_menu =
+        build_split_submenu(app, "智能体", &snapshot.agents, agent_item_id, "暂无智能体")?;
     let session_menu =
         build_split_submenu(app, "会话", &snapshot.sessions, session_item_id, "暂无会话")?;
 
     MenuBuilder::new(app)
         .item(&new_task)
+        .separator()
+        .item(&project_menu)
+        .separator()
+        .item(&agent_menu)
         .separator()
         .item(&session_menu)
         .separator()
@@ -126,6 +167,14 @@ fn dispatch_tray_action(app: &AppHandle, action: TrayAction) {
         }
         TrayAction::ShowMainWindow => show_main_window(app),
         TrayAction::Quit => app.exit(0),
+        TrayAction::OpenProject(id) => {
+            show_main_window(app);
+            let _ = app.emit(TRAY_EVENT_OPEN_PROJECT, TrayOpenPayload { id });
+        }
+        TrayAction::OpenAgent(id) => {
+            show_main_window(app);
+            let _ = app.emit(TRAY_EVENT_OPEN_AGENT, TrayOpenPayload { id });
+        }
         TrayAction::OpenSession(id) => {
             show_main_window(app);
             let _ = app.emit(TRAY_EVENT_OPEN_SESSION, TrayOpenPayload { id });
@@ -157,7 +206,7 @@ pub fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main-tray")
         .icon(icon)
         .icon_as_template(true)
-        .tooltip("SiliconAgent")
+        .tooltip("Silicon Worker")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {

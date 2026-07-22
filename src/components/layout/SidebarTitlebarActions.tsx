@@ -102,11 +102,11 @@ export const SidebarTitlebarActions = forwardRef<HTMLDivElement, SidebarTitlebar
           </button>
         </Tooltip>
         {collapsed && (
-          <Tooltip content="新任务">
+          <Tooltip content="新会话">
             <button
               className={SIDEBAR_TITLEBAR_BUTTON_CLASS_NAME}
               type="button"
-              aria-label="新任务"
+              aria-label="新会话"
               onClick={onNewTask}
             >
               <Plus className="h-[14px] w-[14px]" aria-hidden="true" />

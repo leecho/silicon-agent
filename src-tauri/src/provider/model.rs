@@ -21,6 +21,8 @@ pub struct ProviderView {
     pub enabled: bool,
     pub last_check: Option<ProviderCheckResult>,
     pub sort_order: i64,
+    /// 调用协议：openai | anthropic（未知值由 Protocol::from_str 回退 openai）。
+    pub protocol: String,
 }
 
 /// 厂商写入输入。`api_key`：None=保持现有，空串=清除，非空=设置。
@@ -32,6 +34,8 @@ pub struct ProviderInput {
     pub base_url: String,
     pub api_key: Option<String>,
     pub enabled: bool,
+    #[serde(default)]
+    pub protocol: String,
 }
 
 /// 模型去敏投影。
@@ -47,6 +51,10 @@ pub struct ModelView {
     pub sort_order: i64,
     /// 该模型的上下文窗口上限（token）覆盖；None 表示用内置查表 `model_context_limit`。
     pub context_limit: Option<i64>,
+    /// vision 能力覆盖（原始值，供设置页编辑/回写）；None=跟随内置查表。
+    pub supports_vision: Option<bool>,
+    /// 已解析的 vision 能力（覆盖 ∨ 内置查表）；供 Composer 直接判定是否降级。
+    pub vision_capable: bool,
 }
 
 /// 模型写入输入（id=None 新建）。
@@ -61,6 +69,9 @@ pub struct ModelInput {
     /// 上下文窗口上限覆盖（token）；None/缺省表示沿用内置查表。
     #[serde(default)]
     pub context_limit: Option<i64>,
+    /// vision 能力覆盖；None/缺省表示沿用内置查表。
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
 }
 
 /// 供 Composer 的「启用厂商 → 启用模型」分组视图。
@@ -103,6 +114,34 @@ pub fn model_context_limit(model: &str) -> i64 {
         }
     }
     DEFAULT_CONTEXT_LIMIT
+}
+
+/// 模型是否支持图像输入（多模态/vision），按模型名子串查表，未命中保守判为 false。
+///
+/// 本表只收录支持者；不支持者（如 deepseek-chat）一律走默认 false。
+pub fn model_supports_vision(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    const VISION: &[&str] = &[
+        "gpt-4o",
+        "gpt-4.1",
+        "o1",
+        "o3",
+        "claude",
+        "gemini",
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "glm-4v",
+        "deepseek-vl",
+        "doubao-vision",
+        "doubao-1.5-vision",
+    ];
+    VISION.iter().any(|key| m.contains(key))
+}
+
+/// 解析模型 vision 能力：每模型覆盖 `override_flag` 优先，否则用内置查表。
+pub fn resolved_supports_vision(model: &str, override_flag: Option<bool>) -> bool {
+    override_flag.unwrap_or_else(|| model_supports_vision(model))
 }
 
 #[cfg(test)]
@@ -151,5 +190,40 @@ impl ResolvedModel {
             provider_id: self.provider_id.clone(),
             model: self.model.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod vision_tests {
+    use super::{model_supports_vision, resolved_supports_vision};
+
+    #[test]
+    fn known_vision_families_true() {
+        assert!(model_supports_vision("gpt-4o"));
+        assert!(model_supports_vision("GPT-4o-mini"));
+        assert!(model_supports_vision("claude-opus-4-8"));
+        assert!(model_supports_vision("gemini-1.5-pro"));
+        assert!(model_supports_vision("qwen-vl-max"));
+        assert!(model_supports_vision("qwen2-vl-7b"));
+        assert!(model_supports_vision("glm-4v"));
+        assert!(model_supports_vision("deepseek-vl-7b"));
+    }
+
+    #[test]
+    fn non_vision_models_false() {
+        assert!(!model_supports_vision("deepseek-chat"));
+        assert!(!model_supports_vision("deepseek-reasoner"));
+        assert!(!model_supports_vision("qwen2.5-72b"));
+        assert!(!model_supports_vision("kimi-k2"));
+        assert!(!model_supports_vision("some-unknown-model"));
+        assert!(!model_supports_vision(""));
+    }
+
+    #[test]
+    fn override_wins_over_table() {
+        assert!(resolved_supports_vision("deepseek-chat", Some(true)));
+        assert!(!resolved_supports_vision("gpt-4o", Some(false)));
+        assert!(resolved_supports_vision("gpt-4o", None));
+        assert!(!resolved_supports_vision("deepseek-chat", None));
     }
 }

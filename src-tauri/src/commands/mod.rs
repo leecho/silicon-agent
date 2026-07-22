@@ -1,26 +1,54 @@
 mod artifact_preview;
+pub mod scheduler;
+pub use scheduler::*;
 
 // 按命令域拆分的薄入口子模块；`pub use *` 保持 `commands::<command>` 路径稳定（lib.rs 注册）。
+mod agent;
+mod app_control;
 mod artifact;
+mod browser;
 mod call_log;
-
+mod market;
+mod computer;
+mod permissions;
+mod group;
+mod knowledge;
+mod mcp;
+mod memory;
 mod organization;
+mod plugin;
+mod project;
 mod provider;
 mod run;
 mod runtime;
 mod session;
 mod skill;
+mod team;
+mod tools;
 mod tray;
 mod usage;
+pub use agent::*;
+pub use app_control::*;
 pub use artifact::*;
+pub use browser::*;
 pub use call_log::*;
-
+pub use market::*;
+pub use computer::*;
+pub use permissions::*;
+pub use group::*;
+pub use knowledge::*;
+pub use mcp::*;
+pub use memory::*;
 pub use organization::*;
+pub use plugin::*;
+pub use project::*;
 pub use provider::*;
 pub use run::*;
 pub use runtime::*;
 pub use session::*;
 pub use skill::*;
+pub use team::*;
+pub use tools::*;
 pub use tray::*;
 pub use usage::*;
 

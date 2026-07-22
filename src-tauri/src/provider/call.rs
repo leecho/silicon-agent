@@ -22,9 +22,27 @@ pub fn model_message_to_openai(message: &ModelMessage) -> serde_json::Value {
         ModelMessageRole::Assistant => "assistant",
         ModelMessageRole::Tool => "tool",
     };
+    // 有图片则发 OpenAI 多模态数组（text part + 各 image_url part）；否则维持字符串 content。
+    let content_value = if message.images.is_empty() {
+        serde_json::Value::String(message.content.clone())
+    } else {
+        let mut parts = vec![serde_json::json!({
+            "type": "text",
+            "text": message.content,
+        })];
+        for img in &message.images {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:{};base64,{}", img.media_type, img.base64_data)
+                }
+            }));
+        }
+        serde_json::Value::Array(parts)
+    };
     let mut value = serde_json::json!({
         "role": role,
-        "content": message.content,
+        "content": content_value,
     });
     if let Some(tool_call_id) = &message.tool_call_id {
         value["tool_call_id"] = serde_json::Value::String(tool_call_id.clone());
@@ -290,6 +308,29 @@ mod tests {
         assert!(result.events.iter().any(
             |e| matches!(e, ModelEvent::AssistantMessageCompleted { content } if content == "hi")
         ));
+    }
+
+    #[test]
+    fn message_without_images_uses_string_content() {
+        use crate::provider::message::ModelMessage;
+        let v = model_message_to_openai(&ModelMessage::user("hello"));
+        assert_eq!(v["content"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn message_with_images_uses_multimodal_array() {
+        use crate::provider::message::{ModelImage, ModelMessage};
+        let mut m = ModelMessage::user("look");
+        m.images.push(ModelImage {
+            media_type: "image/png".into(),
+            base64_data: "AAAA".into(),
+        });
+        let v = model_message_to_openai(&m);
+        let arr = v["content"].as_array().expect("content array");
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "look");
+        assert_eq!(arr[1]["type"], "image_url");
+        assert_eq!(arr[1]["image_url"]["url"], "data:image/png;base64,AAAA");
     }
 
     #[test]

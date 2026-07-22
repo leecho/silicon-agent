@@ -4,11 +4,10 @@
 //! 纯协议转换层，与持久化无关。ModelClient 实现（provider/store.rs）按需调用这些自由函数。
 //! 全部仅在 provider 模块内使用，故 `pub(super)`。
 
-use std::time::Duration;
-
 use super::call::{model_message_to_openai, tool_choice_to_openai, tool_spec_to_openai};
 use super::client::{ModelCallRequest, ModelEvent, ProviderCallError, ProviderErrorClass};
 use super::message::ModelResponseSchema;
+use crate::http::HttpError;
 
 pub(super) fn chat_completions_endpoint(base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
@@ -23,20 +22,8 @@ pub(super) fn authorization_header_value(api_key: &str) -> String {
     format!("Bearer {}", api_key.trim())
 }
 
-/// 流式读超时（毫秒）= chunk 间 idle 超时。ureq 的 `timeout_read` 是**单次 socket 读**超时，
-/// 对 SSE 而言等价于"两个 chunk 之间最长无数据时间"，正是我们要的 idle 超时。
-/// 优先使用 `request.timeout_ms`，缺省 60s。
-pub(super) fn stream_read_timeout_ms(request_timeout_ms: Option<u64>) -> u64 {
-    request_timeout_ms.unwrap_or(60_000)
-}
-
-/// 构造带超时的 ureq agent。连接超时固定 10s；读超时按调用方语义传入。
-pub(super) fn timed_agent(read_timeout_ms: u64) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_millis(read_timeout_ms))
-        .build()
-}
+/// 流式真实 idle 上限（毫秒）：连续无数据超过此值才判 idle 超时（与轮询节拍解耦）。
+pub(super) const STREAM_IDLE_BUDGET_MS: u64 = 120_000;
 
 /// HTTP 状态码 → 错误分类。408/429/5xx 视为瞬时可重试，其余终态。
 pub(super) fn classify_status(status: u16) -> ProviderErrorClass {
@@ -47,24 +34,23 @@ pub(super) fn classify_status(status: u16) -> ProviderErrorClass {
     }
 }
 
-pub(super) fn provider_call_error(prefix: &str, err: ureq::Error) -> ProviderCallError {
+/// 把统一 HttpError 映射到 provider 域错误：复用 classify_status/friendly_error_message，
+/// 保持既有 transient/terminal 分类与重试语义不变。
+pub(super) fn http_error_to_provider(err: HttpError) -> ProviderCallError {
     match err {
-        ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
-            // 把 provider 的原始错误体转成面向用户的友好文案（如「余额不足」）。
-            let msg = friendly_error_message(&body, Some(status));
-            // HTTP 错误按状态码分类（429/408/5xx 瞬时，其余终态）。
-            let error = match classify_status(status) {
+        HttpError::Status { code, body } => {
+            let msg = friendly_error_message(&body, Some(code));
+            let e = match classify_status(code) {
                 ProviderErrorClass::Transient => ProviderCallError::transient(msg),
                 ProviderErrorClass::Terminal => ProviderCallError::new(msg),
             };
-            error.with_status(status)
+            e.with_status(code)
         }
-        // 连接失败/重置/超时等传输层错误 = 瞬时，可退避重试。
-        other => ProviderCallError::transient(friendly_error_message(
-            &format!("{prefix}: {other}"),
-            None,
-        )),
+        HttpError::Timeout => ProviderCallError::transient("请求超时，请稍后重试。"),
+        HttpError::Transport(m) => {
+            ProviderCallError::transient(friendly_error_message(&m, None))
+        }
+        HttpError::Decode(m) => ProviderCallError::new(format!("响应解析失败：{m}")),
     }
 }
 
@@ -293,4 +279,43 @@ pub(super) fn emit_stream_line_delta(
         return Ok(true);
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod http_map_tests {
+    use super::http_error_to_provider;
+    use crate::http::HttpError;
+    use crate::provider::client::ProviderErrorClass;
+
+    #[test]
+    fn status_429_maps_transient_with_code() {
+        let e = http_error_to_provider(HttpError::Status {
+            code: 429,
+            body: "{\"error\":{\"message\":\"rate limit\"}}".into(),
+        });
+        assert_eq!(e.class, ProviderErrorClass::Transient);
+        assert_eq!(e.http_status, Some(429));
+        assert!(e.message.contains("限流"));
+    }
+
+    #[test]
+    fn status_401_maps_terminal() {
+        let e = http_error_to_provider(HttpError::Status {
+            code: 401,
+            body: "unauthorized".into(),
+        });
+        assert_eq!(e.class, ProviderErrorClass::Terminal);
+    }
+
+    #[test]
+    fn timeout_and_transport_map_transient() {
+        assert_eq!(
+            http_error_to_provider(HttpError::Timeout).class,
+            ProviderErrorClass::Transient
+        );
+        assert_eq!(
+            http_error_to_provider(HttpError::Transport("reset".into())).class,
+            ProviderErrorClass::Transient
+        );
+    }
 }

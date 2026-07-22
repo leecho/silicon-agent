@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use silicon_agent::engine::RunRegistry;
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::engine::RunRegistry;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 
 fn temp_db() -> Arc<AppDatabase> {
     static C: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

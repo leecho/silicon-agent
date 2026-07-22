@@ -181,4 +181,63 @@ impl SessionStore {
             is_running: false,
         }))
     }
+
+    /// 渐进式披露（T83）：把一批工具名加入会话「已激活集」（幂等，单调累积）。
+    pub fn activate_tools(&self, session_id: &str, tool_names: &[String]) -> Result<(), String> {
+        self.db
+            .with_connection(|c| {
+                for name in tool_names {
+                    c.execute(
+                        "insert or ignore into session_activated_tools(session_id, tool_name) values (?1, ?2)",
+                        rusqlite::params![session_id, name],
+                    )?;
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// 读取会话已激活的工具名集合。
+    pub fn list_activated_tools(&self, session_id: &str) -> Result<Vec<String>, String> {
+        self.db
+            .with_connection(|c| {
+                let mut stmt =
+                    c.prepare("select tool_name from session_activated_tools where session_id = ?1")?;
+                let rows = stmt.query_map([session_id], |r| r.get::<_, String>(0))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r?);
+                }
+                Ok(out)
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod activated_tools_tests {
+    use crate::session::store::SessionStore;
+
+    // 与 workspace_tests.rs::temp_store 同套路：临时文件 sqlite。
+    fn temp_store() -> SessionStore {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("sw-act-test-{nanos}.sqlite3"));
+        let db = std::sync::Arc::new(crate::storage::AppDatabase::open(path).unwrap());
+        SessionStore::open(db).unwrap()
+    }
+
+    #[test]
+    fn activate_and_list_persists_and_dedups() {
+        let s = temp_store();
+        s.activate_tools("sess1", &["web_fetch".into(), "mcp__a__b".into()]).unwrap();
+        s.activate_tools("sess1", &["web_fetch".into()]).unwrap(); // 重复幂等
+        let mut got = s.list_activated_tools("sess1").unwrap();
+        got.sort();
+        assert_eq!(got, vec!["mcp__a__b".to_string(), "web_fetch".to_string()]);
+        // 会话隔离
+        assert!(s.list_activated_tools("sess2").unwrap().is_empty());
+    }
 }

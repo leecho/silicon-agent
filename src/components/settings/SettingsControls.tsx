@@ -15,7 +15,7 @@ export function SettingsSection({ title, description, children }: { title: strin
           </p>
         )}
       </div>
-      <div className="settings-section-surface overflow-hidden rounded-lg border border-border bg-card">{children}</div>
+      <div className="overflow-hidden rounded-lg border border-border bg-surface">{children}</div>
     </section>
   );
 }

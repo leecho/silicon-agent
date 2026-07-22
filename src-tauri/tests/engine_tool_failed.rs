@@ -1,14 +1,14 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::ToolRegistry;
 
 /// 两轮 mock：第一轮请求未注册工具 no_such_tool（→ registry.execute Err），
 /// 第二轮基于错误结果给最终答案。
@@ -20,6 +20,7 @@ impl ModelClient for FailingToolClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);

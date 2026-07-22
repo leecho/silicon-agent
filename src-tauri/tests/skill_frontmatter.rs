@@ -1,4 +1,4 @@
-use silicon_agent::skill::frontmatter::{parse_frontmatter, strip_frontmatter};
+use silicon_worker::skill::frontmatter::{parse_frontmatter, strip_frontmatter};
 
 #[test]
 fn parses_name_and_description() {

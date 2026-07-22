@@ -39,21 +39,30 @@ pub fn set_provider_enabled(
 }
 
 /// 连通测试：GET {base_url}/models，成功返回提示并记录 last_check。
+/// **async + spawn_blocking**：`check_provider` 走阻塞 HTTP（最长 30s 超时），放同步命令会卡死 UI 主线程。
 #[tauri::command]
-pub fn test_provider(
+pub async fn test_provider(
     services: State<'_, AppState>,
     id: String,
 ) -> Result<ProviderCheckResult, String> {
-    services.provider.check_provider(&id, &now_string())
+    let provider = services.provider.clone();
+    let now = now_string();
+    tauri::async_runtime::spawn_blocking(move || provider.check_provider(&id, &now))
+        .await
+        .map_err(|err| format!("连通测试任务失败：{err}"))?
 }
 
 /// 自动拉取厂商可用模型名列表。
+/// **async + spawn_blocking**：`fetch_models` 走阻塞 HTTP（最长 30s 超时），放同步命令会卡死 UI 主线程。
 #[tauri::command]
-pub fn fetch_provider_models(
+pub async fn fetch_provider_models(
     services: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<String>, String> {
-    services.provider.fetch_models(&id)
+    let provider = services.provider.clone();
+    tauri::async_runtime::spawn_blocking(move || provider.fetch_models(&id))
+        .await
+        .map_err(|err| format!("拉取模型任务失败：{err}"))?
 }
 
 /// 列出某厂商下全部模型。

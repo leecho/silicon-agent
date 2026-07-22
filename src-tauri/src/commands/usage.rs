@@ -1,6 +1,8 @@
 //! 用量分析命令（薄入口）。
 use crate::app_state::{now_string, AppState};
-use crate::usage::{ContextUsageView, UsageAnalyticsView, UsageMessageRow, UsageTotals};
+use crate::usage::{
+    ContextUsageView, ScopedUsageView, UsageAnalyticsView, UsageMessageRow, UsageTotals,
+};
 use tauri::State;
 
 /// 读取用量分析聚合。range ∈ {"all","30d","7d"}；非法值按 "all" 处理（resolve_cutoff 兜底）。
@@ -53,6 +55,28 @@ pub fn get_session_usage(
     session_id: String,
 ) -> Result<UsageTotals, String> {
     services.usage.session_totals(&session_id)
+}
+
+/// 项目维度用量详情（总计 + 按会话）。range ∈ {"all","30d","7d"}。
+#[tauri::command]
+pub fn get_project_usage(
+    services: State<'_, AppState>,
+    project_id: String,
+    range: String,
+) -> Result<ScopedUsageView, String> {
+    let now_epoch: i64 = now_string().parse().unwrap_or(0);
+    services.usage.project_usage(&project_id, &range, now_epoch)
+}
+
+/// 智能体维度用量详情（总计 + 按会话，递归归属）。range ∈ {"all","30d","7d"}。
+#[tauri::command]
+pub fn get_agent_usage(
+    services: State<'_, AppState>,
+    agent_id: String,
+    range: String,
+) -> Result<ScopedUsageView, String> {
+    let now_epoch: i64 = now_string().parse().unwrap_or(0);
+    services.usage.agent_usage(&agent_id, &range, now_epoch)
 }
 
 /// 单会话的按消息用量（会话→消息二层展开用）。

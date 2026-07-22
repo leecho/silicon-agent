@@ -1,15 +1,15 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use silicon_agent::context::prompt::{system_prompt, Persona};
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::context::prompt::system_prompt;
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::fs_tools::WriteFile;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::fs_tools::WriteFile;
+use silicon_worker::tools::ToolRegistry;
 
 fn temp_dir() -> std::path::PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -28,14 +28,14 @@ fn temp_dir() -> std::path::PathBuf {
 /// ① plan 模式 system_prompt 含计划模式指引 + propose_plan；normal 模式不含。
 #[test]
 fn system_prompt_plan_mode_appends_guidance() {
-    let plan = system_prompt(&Persona::default(), &[], "plan", "");
+    let plan = system_prompt(&[], &[], "", "plan", "", None, None, None, true, false, &[]);
     assert!(plan.contains("计划模式"), "plan 模式应含「计划模式」段");
     assert!(
         plan.contains("propose_plan"),
         "plan 模式应提到 propose_plan"
     );
 
-    let normal = system_prompt(&Persona::default(), &[], "normal", "");
+    let normal = system_prompt(&[], &[], "", "normal", "", None, None, None, true, false, &[]);
     assert!(
         !normal.contains("计划模式"),
         "normal 模式不应含「计划模式」段"
@@ -91,6 +91,7 @@ impl ModelClient for WriteThenAnswerClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);

@@ -5,13 +5,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::provider::message::{ModelMessage, ModelMessageRole, ModelToolCall};
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::provider::message::{ModelMessage, ModelMessageRole, ModelToolCall};
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 
 /// 捕获首次模型调用时收到的消息序列，便于断言其合法性；随后以普通文本收口结束循环。
 struct CapturingClient {
@@ -22,6 +22,7 @@ impl ModelClient for CapturingClient {
     fn stream_model_with_events(
         &self,
         request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         _on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         {

@@ -61,7 +61,7 @@ pub fn classify_reconcile(i: ReconcileInputs) -> ReconcileAction {
 
 use crate::app_state::now_string;
 use crate::run::coordinator::{emit_run_event, RunCoordinator};
-use crate::session::task_queue::{head_running, parse_queue, reset_orphaned_head, serialize_queue};
+use crate::session::task_queue::{head_running, parse_queue, serialize_queue, settle_queue};
 
 impl RunCoordinator {
     /// 采集快照 → 分类 → 执行收敛。租约即互斥：拿不到运行锁(有活 run / 别处在 reconcile)则跳过。
@@ -86,7 +86,7 @@ impl RunCoordinator {
 
     /// 统一停止（spec §5）：置 stop_requested + 级联子 + reconcile 收敛。
     /// - 非运行中的子（暂停/待跑）当场 reconcile；
-    /// - 运行中的子由其取消退出时收敛父；
+    /// - 运行中的子由其取消退出时（见 spawn_child_run 的 cancelled 分支）收敛父；
     /// - 活动运行中的父由其 run 循环在检查点自停（落「已手动停止」标记）后收尾，这里 reconcile 会被 is_running 跳过。
     pub fn stop(&self, sid: &str) {
         self.cancel_flag(sid)
@@ -103,6 +103,9 @@ impl RunCoordinator {
                 self.reconcile(&c.id);
             }
         }
+        // 任务台账：把本线程下未结束的任务（PM 自办「汇总」、未派发子任务、主任务）标为已取消（沿用旧 stop_children）。
+        let _ = self.projects.cancel_pending_tasks(sid);
+        emit_run_event(&self.app, "tasks_updated", sid, None);
         self.reconcile(sid);
     }
 
@@ -135,7 +138,13 @@ impl RunCoordinator {
                     && self
                         .session
                         .list_children(&s.id)
-                        .map(|cs| cs.iter().all(|c| !self.run_registry.is_running(&c.id)))
+                        .map(|cs| {
+                            cs.iter().all(|c| {
+                                !self.run_registry.is_running(&c.id)
+                                    && !(c.run_outcome.is_none()
+                                        && self.child_has_pending_interaction(&c.id))
+                            })
+                        })
                         .unwrap_or(false)
             })
             .map(|s| s.id)
@@ -156,6 +165,26 @@ impl RunCoordinator {
         }
     }
 
+    /// 子会话是否正合法停在某个等待用户决策的交互（权限/Ask/计划）上。
+    /// 这类「暂停」不是死孤儿：父须继续停泊等用户处理，reconcile 不得把它当孤儿收口。
+    /// 崩溃中途的悬空非交互 tool_call 不算（pending_interaction 仅对需确认/Ask/计划返回 Some）。
+    fn child_has_pending_interaction(&self, child_id: &str) -> bool {
+        self.engine_builder
+            .engine(child_id)
+            .ok()
+            .and_then(|e| e.pending_interaction(child_id).ok())
+            .flatten()
+            .map(|p| {
+                matches!(
+                    p,
+                    crate::engine::PendingInteraction::Ask(_)
+                        | crate::engine::PendingInteraction::Plan(_)
+                        | crate::engine::PendingInteraction::Permission(_)
+                )
+            })
+            .unwrap_or(false)
+    }
+
     fn collect_reconcile_inputs(
         &self,
         sid: &str,
@@ -163,12 +192,12 @@ impl RunCoordinator {
     ) -> Option<ReconcileInputs> {
         let awaiting_or_collect =
             info.awaiting_subagent.is_some() || info.pending_collect.is_some();
-        let any_child_live = self
-            .session
-            .list_children(sid)
-            .ok()?
-            .iter()
-            .any(|c| self.run_registry.is_running(&c.id));
+        // 「活子」既包括有活租约的在跑子，也包括正合法停在权限/Ask/计划上等用户决策的子——
+        // 后者不是死孤儿，父应继续停泊等其被处理，否则会被误收口（用户报的「playwright 暂停后被中断」）。
+        let any_child_live = self.session.list_children(sid).ok()?.iter().any(|c| {
+            self.run_registry.is_running(&c.id)
+                || (c.run_outcome.is_none() && self.child_has_pending_interaction(&c.id))
+        });
         let pend = self
             .engine_builder
             .engine(sid)
@@ -198,12 +227,19 @@ impl RunCoordinator {
     }
 
     /// 分支 B：父停泊收敛——收子（并行=全部未终结；串行=在跑那个+待跑那些）+ 回填 + 清停泊 + 标记。
-    fn converge_parked(&self, parent: &str, _info: &crate::session::SessionInfo) {
+    fn converge_parked(&self, parent: &str, info: &crate::session::SessionInfo) {
         let now = now_string();
-        // 清停泊态（单会话不再有子代理；保留以收口任何历史遗留的停泊标记）。
-        let _ = self.session.set_pending_collect(parent, None, &now);
-        let _ = self.session.clear_awaiting_subagent(parent, &now);
-        // 收子：仍未终结的子 → 收口其自身悬空交互 + 标 cancelled + 通知前端。
+        // collect 停泊：交既有 advance（其检到 cancel_flag 会清 pending_collect+awaiting）。
+        if info.pending_collect.is_some() {
+            let _ = self.advance_pending_collect(parent);
+        }
+        // dispatch 停泊：回填悬空 dispatch（既有原语，幂等）。
+        let _ = self.session.cancel_dangling_dispatches(
+            parent,
+            crate::tools::dispatch_agent::DISPATCH_AGENT_TOOL,
+            &now,
+        );
+        // 收子：仍未终结的子（含串行待跑）→ 收口其自身悬空交互 + 标 cancelled + 通知前端清子冒泡卡。
         if let Ok(children) = self.session.list_children(parent) {
             for c in children {
                 if c.origin != "subagent" || c.run_outcome.is_some() {
@@ -224,50 +260,45 @@ impl RunCoordinator {
             }
         }
         self.session.append_interrupted_marker(parent, &now);
-        self.reset_session_queue_head(parent, &now);
+        // T91 P1-T4：队头复位走共享纯函数 settle_queue(Interrupted)（弹幽灵 Running 队头、不续跑），
+        // 单一来源 = settle_session 的同一判定。converge_parked 的悬空 tool_call 用 dispatch 专用回填
+        // （cancel_dangling_dispatches，含逐子摘要），与 settle_session 的通用收口语义不同，故只折叠队头部分，
+        // 保留父/子收敛逻辑独立（不整体委派 settle_session，避免重复/冲突收口父的 dispatch tool_call）。
+        {
+            let _lock = self.task_queue_lock.lock().unwrap();
+            let mut items = parse_queue(
+                self.session
+                    .get_pending_tasks(parent)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            );
+            let _ = settle_queue(&mut items, crate::session::task_queue::SettleOutcome::Interrupted);
+            let payload = serialize_queue(&items);
+            let payload = if items.is_empty() {
+                None
+            } else {
+                payload.as_deref()
+            };
+            let _ = self.session.set_pending_tasks(parent, payload, &now);
+        }
         emit_run_event(&self.app, "run_finished", parent, Some("cancelled"));
     }
 
     /// 分支 C：被停止的暂停态——收口悬空交互 tool_call + 标记。
     fn converge_paused(&self, sid: &str) {
-        let now = now_string();
-        if let Ok(Some((tc, _))) = self.session.first_dangling_tool_call(sid) {
-            let _ =
-                self.session
-                    .settle_pending_tool_call(sid, &tc, "会话已停止，未执行该操作。", &now);
-        }
-        self.session.append_stopped_marker(sid, &now);
-        emit_run_event(&self.app, "run_finished", sid, Some("cancelled"));
+        // T91：经唯一收口点（补上原先缺失的队头复位——停止一个暂停态的 run 也会留 Running 队头）。
+        let _ = self.settle_session(sid, crate::session::task_queue::SettleOutcome::Cancelled);
     }
 
     /// 分支 A：本该在跑却无活线程——收口悬空非交互 tool_call + 解冻队头 + 标记。
+    /// T91 P1-T4：委派唯一收口点。`settle_session(Interrupted)` 同义且更收敛——
+    /// 收口悬空 tool_call("上一轮因进程退出未完成。") + interrupted 标记 + 弹幽灵 Running 队头
+    /// + queued_tasks_updated + run_finished("cancelled")，与原 converge_orphan 逐项等价
+    /// （唯一差异：原 reset_session_queue_head 会把下一项标 Running 但不续跑、留下幽灵队头；
+    /// settle_queue(Interrupted) 只弹队头、余项保持 Queued，更符合「收敛到静止、绝不续跑」）。
     fn converge_orphan(&self, sid: &str) {
-        let now = now_string();
-        if let Ok(Some((tc, _))) = self.session.first_dangling_tool_call(sid) {
-            let _ =
-                self.session
-                    .settle_pending_tool_call(sid, &tc, "上一轮因进程退出未完成。", &now);
-        }
-        self.session.append_interrupted_marker(sid, &now);
-        self.reset_session_queue_head(sid, &now);
-        emit_run_event(&self.app, "queued_tasks_updated", sid, None);
-        emit_run_event(&self.app, "run_finished", sid, Some("cancelled"));
-    }
-
-    /// 弹掉幽灵 Running 队头（既有 reset_orphaned_head），不提升续跑（收敛到静止）。
-    fn reset_session_queue_head(&self, sid: &str, now: &str) {
-        let _lock = self.task_queue_lock.lock().unwrap();
-        let mut items = parse_queue(
-            self.session
-                .get_pending_tasks(sid)
-                .ok()
-                .flatten()
-                .as_deref(),
-        );
-        let _ = reset_orphaned_head(&mut items);
-        let _ = self
-            .session
-            .set_pending_tasks(sid, serialize_queue(&items).as_deref(), now);
+        let _ = self.settle_session(sid, crate::session::task_queue::SettleOutcome::Interrupted);
     }
 }
 

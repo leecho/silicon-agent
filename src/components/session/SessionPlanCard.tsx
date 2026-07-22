@@ -18,7 +18,7 @@ export function SessionPlanCard({
   const [comment, setComment] = useState("");
   const [editing, setEditing] = useState(false);
   return (
-    <div className="m-3 shrink-0 rounded-2xl border border-border-subtle bg-card px-4 py-3 shadow-sm">
+    <div className="m-3 shrink-0 rounded-2xl border border-border-subtle bg-surface px-4 py-3 shadow-sm">
       <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground">
         <ClipboardList size={15} className="shrink-0 text-foreground-muted" />
         <span className="min-w-0 flex-1">{plan.title}</span>
@@ -38,7 +38,7 @@ export function SessionPlanCard({
       {editing ? (
         <div className="flex flex-col gap-2">
           <textarea
-            className="min-h-[64px] w-full rounded border border-border-subtle bg-card px-2 py-1 text-sm text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-ring"
+            className="min-h-[64px] w-full rounded border border-border-subtle  px-2 py-1 text-sm text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-ring"
             placeholder="说明需要修改的地方..."
             value={comment}
             disabled={busy}

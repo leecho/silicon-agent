@@ -5,20 +5,22 @@
 // The test structure mirrors what the command does:
 //   1. submit_user_input → pending (暂停)
 //   2a. Approve:  grant_tool + engine.resume
-//   2b. Deny:     append_tool_result("用户拒绝了该操作。") + engine.resume
+//   2b. Deny:     命令层（coordinator）现在「拒绝即停止会话」、不续跑；该决策在 coordinator 层，
+//                 此集成测试构造不出 State/coordinator，故这里只覆盖 engine 的「落结果后能 resume」
+//                 底层能力（approve 流复用）。Test B 即验证该 resume 能力，非命令的拒绝行为。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use silicon_agent::engine::{Engine, PendingInteraction};
-use silicon_agent::provider::client::{
+use silicon_worker::engine::{Engine, PendingInteraction};
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::PendingPermission;
-use silicon_agent::session::{new_id, SessionStore};
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::command_tool::CommandExecute;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::PendingPermission;
+use silicon_worker::session::{new_id, SessionStore};
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::command_tool::CommandExecute;
+use silicon_worker::tools::ToolRegistry;
 
 // ---------------------------------------------------------------------------
 // Two-turn mock client: turn 0 requests run_command, turn 1 gives final answer.
@@ -43,6 +45,7 @@ impl ModelClient for TwoTurnClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -217,10 +220,11 @@ fn approve_path_grants_and_resumes() {
 }
 
 // ---------------------------------------------------------------------------
-// Test B: Deny path
+// Test B: engine resume-after-tool-result（底层能力；approve 流复用）
 //   submit → pending (run_command paused)
-//   → find_pending_tool_name + append_tool_result("用户拒绝了该操作。") + engine.resume
-//   → 拒绝结果落库、模型续跑给最终答案
+//   → append_tool_result(...) + engine.resume → 结果落库、模型续跑给最终答案
+//   注：命令层现已「拒绝即停止会话」（见 coordinator::spawn_permission_decision），
+//   故这不再代表命令的拒绝行为，仅验证 engine 能在落结果后续跑。
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -195,11 +195,13 @@ pub trait ModelClient: Send + Sync {
     fn stream_model_with_events(
         &self,
         request: ModelCallRequest,
+        cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
+        // 默认（非真流式）实现：无逐字节读，cancel 仅逐 event 生效。
         let result = self.stream_model(request)?;
         for event in result.events.iter().cloned() {
-            if !on_event(event) {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) || !on_event(event) {
                 return Err(ProviderCallError::new("model stream cancelled"));
             }
         }

@@ -1,8 +1,9 @@
 //! ProviderStore：模型 CRUD、默认/选择解析、fallback 设置、远端模型拉取。
 use super::{model_from_row, new_id, ProviderStore};
-use crate::provider::adapter::{authorization_header_value, timed_agent};
+use crate::provider::adapter::authorization_header_value;
 use crate::provider::client::{ModelCallRequest, ProviderCallError};
 use crate::provider::model::{EnabledProviderModels, ModelInput, ModelView, ResolvedModel};
+use crate::provider::protocol::{CallTarget, Protocol};
 use crate::storage::StorageError;
 use rusqlite::{params, OptionalExtension};
 
@@ -12,7 +13,7 @@ impl ProviderStore {
         self.db
             .with_connection(|c| {
                 let mut stmt = c.prepare(
-                    "select id, provider_id, model, display_name, enabled, is_default, sort_order, context_limit
+                    "select id, provider_id, model, display_name, enabled, is_default, sort_order, context_limit, supports_vision
                      from provider_models where provider_id = ?1
                      order by sort_order asc, model asc, id asc",
                 )?;
@@ -31,7 +32,7 @@ impl ProviderStore {
             .with_connection(|c| {
                 let row = c
                     .query_row(
-                        "select id, provider_id, model, display_name, enabled, is_default, sort_order, context_limit
+                        "select id, provider_id, model, display_name, enabled, is_default, sort_order, context_limit, supports_vision
                          from provider_models where id = ?1",
                         [id],
                         model_from_row,
@@ -64,15 +65,16 @@ impl ProviderStore {
                     |r| r.get(0),
                 )?;
                 c.execute(
-                    "insert into provider_models (id, provider_id, model, display_name, enabled, is_default, sort_order, context_limit, updated_at)
-                     values (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)
+                    "insert into provider_models (id, provider_id, model, display_name, enabled, is_default, sort_order, context_limit, supports_vision, updated_at)
+                     values (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)
                      on conflict(id) do update set
                         model = excluded.model,
                         display_name = excluded.display_name,
                         enabled = excluded.enabled,
                         context_limit = excluded.context_limit,
+                        supports_vision = excluded.supports_vision,
                         updated_at = excluded.updated_at",
-                    params![id, input.provider_id, model, display, input.enabled as i64, sort, input.context_limit, now],
+                    params![id, input.provider_id, model, display, input.enabled as i64, sort, input.context_limit, input.supports_vision.map(|b| b as i64), now],
                 )?;
                 Ok(())
             })
@@ -196,6 +198,28 @@ impl ProviderStore {
             .unwrap_or_else(|| crate::provider::model::model_context_limit(model_name))
     }
 
+    /// 模型 vision 能力：优先用该模型名配置的 `supports_vision` 覆盖（取首个非空），
+    /// 否则回退内置查表 `model_supports_vision`。供引擎装配消息时判定降级。
+    pub fn supports_vision_for(&self, model_name: &str) -> bool {
+        let configured: Option<i64> = self
+            .db
+            .with_connection(|c| {
+                let v = c
+                    .query_row(
+                        "select supports_vision from provider_models
+                         where model = ?1 and supports_vision is not null
+                         order by sort_order asc, id asc limit 1",
+                        [model_name],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .ok()
+            .flatten();
+        crate::provider::model::resolved_supports_vision(model_name, configured.map(|v| v != 0))
+    }
+
     // ---- fallback 设置 ----
     pub fn set_fallback_model(&self, model_id: Option<&str>) -> Result<(), String> {
         match model_id {
@@ -270,11 +294,11 @@ impl ProviderStore {
             .ok_or_else(|| "未配置可用模型，请在设置中添加并启用模型，并设置默认模型。".into())
     }
 
-    /// 据 request.model_selection（或默认）得到 (base_url, api_key, model)。
+    /// 据 request.model_selection（或默认）得到端点凭证 + 协议。
     pub(in crate::provider) fn call_target(
         &self,
         request: &ModelCallRequest,
-    ) -> Result<(String, String, String), ProviderCallError> {
+    ) -> Result<CallTarget, ProviderCallError> {
         let selection = match &request.model_selection {
             Some(s) => s.clone(),
             None => self
@@ -290,11 +314,16 @@ impl ProviderStore {
             .secrets
             .read(&selection.provider_id)
             .map_err(|_| ProviderCallError::new("该厂商未配置 API Key"))?;
-        Ok((provider.base_url, api_key, selection.model))
+        Ok(CallTarget {
+            base_url: provider.base_url,
+            api_key,
+            model: selection.model,
+            protocol: Protocol::from_str(&provider.protocol),
+        })
     }
 
     // ---- 自动拉取模型列表 ----
-    /// GET {base_url}/models，解析 data[].id。
+    /// 拉取厂商可用模型名列表：OpenAI 走 {base}/models + Bearer；Anthropic 走 {base}/v1/models + x-api-key。
     pub fn fetch_models(&self, provider_id: &str) -> Result<Vec<String>, String> {
         let provider = self
             .get_provider(provider_id)?
@@ -303,16 +332,37 @@ impl ProviderStore {
             .secrets
             .read(provider_id)
             .map_err(|_| "该厂商未配置 API Key".to_string())?;
+        let api_key = api_key.trim();
         let base = provider.base_url.trim().trim_end_matches('/');
-        let endpoint = format!("{base}/models");
-        let agent = timed_agent(30_000);
-        let response: serde_json::Value = agent
-            .get(&endpoint)
-            .set("Authorization", &authorization_header_value(&api_key))
-            .call()
-            .map_err(|err| format!("拉取模型失败：{err}"))?
-            .into_json()
-            .map_err(|err| format!("模型列表不是合法 JSON：{err}"))?;
+        let (url, hdrs) = match Protocol::from_str(&provider.protocol) {
+            Protocol::Anthropic => (
+                format!("{base}/v1/models"),
+                vec![
+                    ("x-api-key".to_string(), api_key.to_string()),
+                    ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ],
+            ),
+            Protocol::OpenAi => (
+                format!("{base}/models"),
+                vec![(
+                    "Authorization".to_string(),
+                    authorization_header_value(api_key),
+                )],
+            ),
+        };
+        let resp = crate::http::HttpClient::new()
+            .send(
+                crate::http::HttpRequest::get(url)
+                    .headers(hdrs)
+                    .timeout(std::time::Duration::from_secs(30)),
+            )
+            .map_err(|e| format!("拉取模型失败：{e:?}"))?;
+        if !resp.is_success() {
+            return Err(format!("拉取模型失败：HTTP {}", resp.status));
+        }
+        let response: serde_json::Value = resp
+            .json()
+            .map_err(|e| format!("模型列表不是合法 JSON：{e:?}"))?;
         let ids = response
             .get("data")
             .and_then(|d| d.as_array())

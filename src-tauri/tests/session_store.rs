@@ -1,5 +1,5 @@
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 fn temp_db() -> Arc<AppDatabase> {

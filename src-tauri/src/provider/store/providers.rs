@@ -10,7 +10,7 @@ impl ProviderStore {
             .with_connection(|c| {
                 let mut stmt = c.prepare(
                     "select id, name, base_url, has_secret, secret_hint, enabled,
-                            last_check_status, last_check_detail, last_check_at, sort_order
+                            last_check_status, last_check_detail, last_check_at, sort_order, protocol
                      from providers order by sort_order asc, name asc, id asc",
                 )?;
                 let rows = stmt.query_map([], provider_from_row)?;
@@ -29,7 +29,7 @@ impl ProviderStore {
                 let row = c
                     .query_row(
                         "select id, name, base_url, has_secret, secret_hint, enabled,
-                                last_check_status, last_check_detail, last_check_at, sort_order
+                                last_check_status, last_check_detail, last_check_at, sort_order, protocol
                          from providers where id = ?1",
                         [id],
                         provider_from_row,
@@ -56,6 +56,10 @@ impl ProviderStore {
         let has_secret = self.secrets.has_secret(&id);
         let secret_hint = self.secrets.hint(&id);
         let enabled = input.enabled as i64;
+        let protocol = {
+            let p = input.protocol.trim().to_ascii_lowercase();
+            if p.is_empty() { "openai".to_string() } else { p }
+        };
         self.db
             .with_connection(|c| {
                 // 新建时 sort_order 取当前最大值 +1。
@@ -65,16 +69,17 @@ impl ProviderStore {
                     |r| r.get(0),
                 )?;
                 c.execute(
-                    "insert into providers (id, name, base_url, has_secret, secret_hint, enabled, sort_order, updated_at)
-                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    "insert into providers (id, name, base_url, has_secret, secret_hint, enabled, protocol, sort_order, updated_at)
+                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                      on conflict(id) do update set
                         name = excluded.name,
                         base_url = excluded.base_url,
                         has_secret = excluded.has_secret,
                         secret_hint = excluded.secret_hint,
                         enabled = excluded.enabled,
+                        protocol = excluded.protocol,
                         updated_at = excluded.updated_at",
-                    params![id, name, base_url, has_secret, secret_hint, enabled, sort, now],
+                    params![id, name, base_url, has_secret, secret_hint, enabled, protocol, sort, now],
                 )?;
                 Ok(())
             })

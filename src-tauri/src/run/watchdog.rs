@@ -8,6 +8,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
+use crate::browser::BrowserController;
 
 /// 心跳过期阈值（spec §4）：远超最长合法单步（模型调用），又能在合理时间兜住真挂死。
 pub const RUN_STALE_TIMEOUT_MS: u64 = 5 * 60 * 1000; // 5 分钟
@@ -32,6 +33,19 @@ pub fn start(app: AppHandle) {
         std::thread::sleep(WATCHDOG_TICK);
         let st = app.state::<AppState>();
         st.coordinator.watchdog_tick();
+
+        // T92 P2：空闲超时关常驻浏览器。一次设置读 + 一次 is_open/idle 检查，廉价。
+        let min = st.app_settings.get_browser_idle_close_min().unwrap_or(10);
+        if min > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            if st.shared_browser.should_idle_close(now_ms, min * 60_000) {
+                eprintln!("[browser] 空闲 {min} 分钟，自动关闭常驻浏览器");
+                st.shared_browser.close();
+            }
+        }
     });
 }
 

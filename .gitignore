@@ -14,8 +14,8 @@ src-tauri/.cargo/
 src-tauri/*.log
 
 # Runtime local data
-.silicon-agent/
-src-tauri/.silicon-agent/
+.silicon-worker/
+src-tauri/.silicon-worker/
 *.sqlite
 *.sqlite3
 *.sqlite3-*
@@ -62,13 +62,11 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.example.json
 
-# Local-only internal docs and agent instructions (kept locally, not tracked)
-/AGENTS.md
-/CLAUDE.md
-/docs/
-
 # Temporary files
 *.tmp
 *.temp
 *.swp
 *.swo
+
+# Git worktrees (isolated workspaces)
+.worktrees/

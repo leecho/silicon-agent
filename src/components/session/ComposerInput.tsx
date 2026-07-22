@@ -255,7 +255,12 @@ export const ComposerInput = forwardRef<ComposerInputHandle, {
   };
 
   useImperativeHandle(ref, () => ({
-    insertSkill: (skill) => insertChipAtCaret(makeChip("skill", skill.name, skill.name)),
+    // plugin 技能必须插**限定名**（`plugin:name`）：chip 的 value 是真正交给后端解析的字符串，
+    // 塞裸名会在两个 plugin 带同名技能时解析到错的那一个。
+    insertSkill: (skill) =>
+      insertChipAtCaret(
+        makeChip("skill", skill.qualifiedName ?? skill.name, skill.qualifiedName ?? skill.name),
+      ),
     setText: (text) => {
       const el = editorRef.current;
       if (!el) return;
@@ -343,7 +348,8 @@ export const ComposerInput = forwardRef<ComposerInputHandle, {
     }
     closeMenu();
     if (item.type === "skill") {
-      insertChipAt(range, makeChip("skill", item.skill.name, item.skill.name));
+      const skillName = item.skill.qualifiedName ?? item.skill.name;
+      insertChipAt(range, makeChip("skill", skillName, skillName));
     } else if (item.type === "workspaceFile") {
       insertChipAt(range, makeChip("file", item.path, item.path));
     } else {
@@ -488,7 +494,7 @@ export const ComposerInput = forwardRef<ComposerInputHandle, {
                   key={item.skill.id}
                   active={activeIndex === i}
                   icon={<Icon className="h-3.5 w-3.5 shrink-0 text-foreground-secondary" />}
-                  title={item.skill.name}
+                  title={item.skill.qualifiedName ?? item.skill.name}
                   description={item.skill.description || undefined}
                   onSelect={() => selectItem(item)}
                 />

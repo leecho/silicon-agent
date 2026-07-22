@@ -10,6 +10,7 @@ export function Disclosure({
   defaultOpen,
   forceOpen,
   mono,
+  flush,
   children,
 }: {
   icon?: ReactNode;
@@ -18,6 +19,8 @@ export function Disclosure({
   defaultOpen?: boolean;
   forceOpen?: boolean;
   mono?: boolean;
+  /** 去掉展开内容的左侧竖线与缩进（过程区用平铺样式）。 */
+  flush?: boolean;
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
@@ -38,7 +41,7 @@ export function Disclosure({
       </button>
       {isOpen && (
         <div
-          className={`mt-1 min-w-0 max-w-full whitespace-pre-wrap break-words border-l border-border-subtle px-3 py-1 text-[12px] leading-5 text-foreground-muted${mono ? " font-mono" : ""}`}
+          className={`mt-1 min-w-0 max-w-full whitespace-pre-wrap break-words py-1 text-[12px] leading-5 text-foreground-muted${flush ? "" : " px-3"}${mono ? " font-mono" : ""}`}
         >
           {children}
         </div>

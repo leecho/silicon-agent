@@ -1,16 +1,16 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::{Engine, PendingInteraction};
-use silicon_agent::provider::client::{
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::{Engine, PendingInteraction};
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::PendingPermission;
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::command_tool::CommandExecute;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::PendingPermission;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::command_tool::CommandExecute;
+use silicon_worker::tools::ToolRegistry;
 
 /// 两轮 mock：第一轮请求 run_command（风险工具，需确认），第二轮基于工具结果给最终答案。
 /// 镜像真实 provider 流式：live ToolCallCreated 的 args 为空，完整 args 在最终 result.events。
@@ -23,6 +23,7 @@ impl ModelClient for PermissionClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -212,6 +213,7 @@ impl ModelClient for ReadOnlyClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -248,7 +250,7 @@ impl ModelClient for ReadOnlyClient {
 
 #[test]
 fn read_only_tool_runs_without_pause() {
-    use silicon_agent::tools::fs_tools::ReadFile;
+    use silicon_worker::tools::fs_tools::ReadFile;
 
     let base = temp_dir();
     let workspace = base.join("workspace");
@@ -303,6 +305,7 @@ impl ModelClient for WriteFileClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -340,7 +343,7 @@ impl ModelClient for WriteFileClient {
 /// auto 模式：低风险 write_file 自动放行、不暂停、直接执行落结果。
 #[test]
 fn auto_mode_runs_low_risk_without_pause() {
-    use silicon_agent::tools::fs_tools::WriteFile;
+    use silicon_worker::tools::fs_tools::WriteFile;
 
     let base = temp_dir();
     let workspace = base.join("workspace");

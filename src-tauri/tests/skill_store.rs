@@ -1,6 +1,6 @@
-use silicon_agent::skill::model::{SkillRecord, SkillSource};
-use silicon_agent::skill::store;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::skill::model::{SkillRecord, SkillSource};
+use silicon_worker::skill::store;
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 fn temp_db() -> Arc<AppDatabase> {

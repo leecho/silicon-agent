@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { ArrowLeft, ChevronRight, Cpu, KeyRound, Plus, Trash2, Wifi } from "lucide-react";
+import { ArrowLeft, ChevronRight, Cpu, Eye, EyeOff, KeyRound, Pencil, Plus, Shuffle, Sparkles, Trash2, Wifi } from "lucide-react";
 import {
   deleteProvider,
   deleteProviderModel,
   fetchProviderModels,
+  getAuxModelId,
+  getFallbackModel,
   listProviders,
   listProviderModels,
+  setAuxModelId,
   setDefaultModel,
+  setFallbackModel,
   setModelEnabled,
   setProviderEnabled,
   testProvider,
@@ -15,6 +19,7 @@ import {
 } from "../../../api";
 import type { ModelEntry, Provider, ProviderInput } from "../../../types";
 import { Badge, Button, Drawer, DrawerHeader, Select, Switch, Tooltip, useMessages, useNotifications } from "../../../components/ui";
+import { SettingItem } from "../../../components/settings/SettingsControls";
 import { ProviderForm, ProviderFormModal } from "./ProviderFormModal";
 import { buildProviderCatalogRows, type CustomProviderCatalogRow, type ProviderCatalogRow } from "./providerCatalog";
 import { PROVIDER_PRESETS, type ProviderPreset } from "./providerPresets";
@@ -319,10 +324,34 @@ export function ProviderSection({
         displayName: model.displayName,
         enabled: model.enabled,
         contextLimit: n,
+        // 保留 vision 覆盖（原始值），避免被本次保存清空。
+        supportsVision: model.supportsVision,
       });
       await reloadModels(model.providerId);
     } catch (err) {
       notify.error({ title: "保存上下文上限失败", message: String(err) });
+      await reloadModels(model.providerId);
+    }
+  }
+
+  /// vision 二态切换：以当前生效值（覆盖优先，否则探测能力）为准，点击切换为相反的显式覆盖。
+  async function toggleVision(model: ModelEntry) {
+    const effective = model.supportsVision ?? model.visionCapable;
+    const next = !effective;
+    try {
+      await upsertProviderModel({
+        id: model.id,
+        providerId: model.providerId,
+        model: model.model,
+        displayName: model.displayName,
+        enabled: model.enabled,
+        // 保留上下文上限覆盖（原始值），避免被本次保存清空。
+        contextLimit: model.contextLimit,
+        supportsVision: next,
+      });
+      await reloadModels(model.providerId);
+    } catch (err) {
+      notify.error({ title: "保存图像能力失败", message: String(err) });
       await reloadModels(model.providerId);
     }
   }
@@ -403,6 +432,7 @@ export function ProviderSection({
           onSaveProvider={saveProvider}
           onSetProviderConfigOpen={setProviderConfigOpen}
           onSetContextLimit={promptContextLimit}
+          onToggleVision={toggleVision}
           onTestProvider={handleTest}
           onToggleModel={toggleModelRow}
           onToggleProvider={toggleProvider}
@@ -468,6 +498,8 @@ function ProviderCatalogView({
         providerNamesById={providerNamesById}
       />
 
+      <ModelRolesPanel models={models} providerNamesById={providerNamesById} />
+
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-[15px] font-[650] leading-[1.4] text-foreground">模型厂商</h3>
         <Button tone="outline" onClick={onAddCustom}>
@@ -529,9 +561,11 @@ function ProviderPresetCard({ row, onOpen }: { row: ProviderCatalogRow; onOpen: 
         </Badge>
         {provider && <Badge tone={provider.enabled ? "success" : "neutral"}>{provider.enabled ? "已启用" : "已停用"}</Badge>}
         {provider?.lastCheck && (
-          <Badge tone={provider.lastCheck.status === "ready" ? "success" : "danger"}>
-            {provider.lastCheck.detail}
-          </Badge>
+          <Tooltip content={provider.lastCheck.detail}>
+            <Badge tone={provider.lastCheck.status === "ready" ? "success" : "danger"}>
+              {provider.lastCheck.status === "ready" ? provider.lastCheck.detail : "连通失败"}
+            </Badge>
+          </Tooltip>
         )}
       </div>
       <ProviderStats
@@ -665,6 +699,127 @@ function GlobalDefaultModelPanel({
   );
 }
 
+/** 模型角色：备用模型（fallback）与辅助模型，作用于全局，落在「模型配置」首页。 */
+function ModelRolesPanel({
+  models,
+  providerNamesById,
+}: {
+  models: ModelEntry[];
+  providerNamesById: Record<string, string>;
+}) {
+  const notify = useNotifications();
+  const [fallbackId, setFallbackId] = useState<string | null>(null);
+  const [auxId, setAuxId] = useState<string | null>(null);
+
+  useEffect(() => {
+    getFallbackModel().then(setFallbackId).catch(() => {});
+    getAuxModelId().then(setAuxId).catch(() => {});
+  }, []);
+
+  const enabledModelOptions = useMemo(
+    () =>
+      models
+        .filter((model) => model.enabled)
+        .map((model) => {
+          const providerName = providerNamesById[model.providerId] ?? "未知厂商";
+          const label = model.displayName || model.model;
+          return {
+            value: model.id,
+            label,
+            description: model.displayName ? model.model : undefined,
+            group: providerName,
+            searchText: `${providerName} ${label} ${model.model}`,
+          };
+        }),
+    [models, providerNamesById],
+  );
+  const fallbackOptions = useMemo(
+    () => [{ label: "不使用备用模型", value: "" }, ...enabledModelOptions],
+    [enabledModelOptions],
+  );
+  const auxOptions = useMemo(
+    () => [{ label: "跟随会话模型（默认）", value: "" }, ...enabledModelOptions],
+    [enabledModelOptions],
+  );
+
+  async function changeFallback(modelId: string) {
+    const next = modelId === "" ? null : modelId;
+    const prev = fallbackId;
+    setFallbackId(next);
+    try {
+      await setFallbackModel(next);
+    } catch (err) {
+      notify.error({ title: "备用模型设置失败", message: String(err) });
+      setFallbackId(prev);
+    }
+  }
+
+  async function changeAux(modelId: string) {
+    const next = modelId === "" ? null : modelId;
+    const prev = auxId;
+    setAuxId(next);
+    try {
+      await setAuxModelId(next);
+    } catch (err) {
+      notify.error({ title: "辅助模型设置失败", message: String(err) });
+      setAuxId(prev);
+    }
+  }
+
+  return (
+    <div className="settings-section-surface overflow-hidden rounded-lg border border-border bg-surface">
+      <SettingItem
+        title="备用模型（fallback）"
+        description="主模型调用失败时一次性降级使用。可留空。"
+        icon={Shuffle}
+      >
+        <Select
+          className="text-sm h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none transition focus:border-ring"
+          value={fallbackId ?? ""}
+          searchable
+          searchPlaceholder="筛选备用模型"
+          onChange={(value) => void changeFallback(value)}
+          options={fallbackOptions}
+          renderOption={(option) => (
+            <span className="min-w-0">
+              <span className="block truncate">{option.label}</span>
+              {option.description && (
+                <span className="mt-1 block truncate text-xs text-foreground-muted">
+                  {option.description}
+                </span>
+              )}
+            </span>
+          )}
+        />
+      </SettingItem>
+      <SettingItem
+        title="辅助模型"
+        description="标题归纳与快捷建议所用的模型。建议选便宜的小/非推理模型，省钱更快；默认跟随会话模型。"
+        icon={Sparkles}
+      >
+        <Select
+          className="text-sm h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none transition focus:border-ring"
+          value={auxId ?? ""}
+          searchable
+          searchPlaceholder="筛选辅助模型"
+          onChange={(value) => void changeAux(value)}
+          options={auxOptions}
+          renderOption={(option) => (
+            <span className="min-w-0">
+              <span className="block truncate">{option.label}</span>
+              {option.description && (
+                <span className="mt-1 block truncate text-xs text-foreground-muted">
+                  {option.description}
+                </span>
+              )}
+            </span>
+          )}
+        />
+      </SettingItem>
+    </div>
+  );
+}
+
 function ProviderDetailView({
   formatContextLimit,
   modelRows,
@@ -677,6 +832,7 @@ function ProviderDetailView({
   onRetryFetch,
   onSaveProvider,
   onSetContextLimit,
+  onToggleVision,
   onSetProviderConfigOpen,
   onTestProvider,
   onToggleModel,
@@ -697,6 +853,7 @@ function ProviderDetailView({
   onRetryFetch: (providerId: string) => Promise<void>;
   onSaveProvider: (input: ProviderInput) => Promise<void>;
   onSetContextLimit: (model: ModelEntry) => Promise<void>;
+  onToggleVision: (model: ModelEntry) => Promise<void>;
   onSetProviderConfigOpen: Dispatch<SetStateAction<boolean>>;
   onTestProvider: (provider: Provider) => Promise<void>;
   onToggleModel: (providerId: string, row: DetailModelRow, enabled: boolean) => Promise<void>;
@@ -724,18 +881,20 @@ function ProviderDetailView({
       </div>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-        <h3 className="truncate text-lg font-semibold text-foreground">{title}</h3>
+          <h3 className="truncate text-lg font-semibold text-foreground">{title}</h3>
           <p className="mt-1 truncate text-sm text-foreground-muted">{baseUrl || "配置自定义 OpenAI-compatible 厂商"}</p>
-      </div>
+        </div>
         {provider && (
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <Badge tone={provider.hasSecret ? "success" : "neutral"}>
               {provider.hasSecret ? `密钥已配置${provider.secretHint ? ` · ${provider.secretHint}` : ""}` : "未配置密钥"}
             </Badge>
             {provider.lastCheck && (
-              <Badge tone={provider.lastCheck.status === "ready" ? "success" : "danger"}>
-                {provider.lastCheck.detail}
-              </Badge>
+              <Tooltip content={provider.lastCheck.detail}>
+                <Badge tone={provider.lastCheck.status === "ready" ? "success" : "danger"}>
+                  {provider.lastCheck.status === "ready" ? provider.lastCheck.detail : "连通失败"}
+                </Badge>
+              </Tooltip>
             )}
             <Switch checked={provider.enabled} onChange={(value) => void onToggleProvider(provider, value)} />
             <Button className="px-3 py-2" tone="outline" onClick={() => void onTestProvider(provider)} disabled={testingId === provider.id}>
@@ -766,9 +925,9 @@ function ProviderDetailView({
         </div>
       ) : (
         <>
-          <div className="rounded-lg border border-border bg-surface">
-            <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-              <div className="min-w-0">
+          <div className="rounded-lg ">
+            <div className="flex flex-wrap items-center justify-between gap-3 px-2 py-3">
+              <div className="min-w-0 flex gap-2 items-end">
                 <div className="text-sm font-semibold text-foreground">模型</div>
                 <p className="mt-1 text-xs text-foreground-muted">
                   {modelsLoading ? "正在拉取厂商模型列表…" : `共 ${modelRows.length} 个模型，点击开关即可启用。`}
@@ -781,9 +940,11 @@ function ProviderDetailView({
               </div>
             </div>
             {modelsError && (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3">
-                <p className="min-w-0 text-xs text-destructive">拉取模型失败：{modelsError}</p>
-                <Button className="px-3 py-1.5 text-xs" tone="outline" onClick={() => void onRetryFetch(provider.id)}>
+              <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border px-5 py-3">
+                <p className="min-w-0 flex-1 max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-destructive">
+                  拉取模型失败：{modelsError}
+                </p>
+                <Button className="shrink-0 px-3 py-1.5 text-xs" tone="outline" onClick={() => void onRetryFetch(provider.id)}>
                   重试
                 </Button>
               </div>
@@ -800,6 +961,7 @@ function ProviderDetailView({
                 modelRows={modelRows}
                 onDeleteModel={onDeleteModel}
                 onSetContextLimit={onSetContextLimit}
+                onToggleVision={onToggleVision}
                 onToggleModel={(row, enabled) => onToggleModel(provider.id, row, enabled)}
               />
             )}
@@ -837,45 +999,64 @@ function ProviderModelTable({
   modelRows,
   onDeleteModel,
   onSetContextLimit,
+  onToggleVision,
   onToggleModel,
 }: {
   formatContextLimit: (limit: number | null | undefined) => string;
   modelRows: DetailModelRow[];
   onDeleteModel: (model: ModelEntry) => Promise<void>;
   onSetContextLimit: (model: ModelEntry) => Promise<void>;
+  onToggleVision: (model: ModelEntry) => Promise<void>;
   onToggleModel: (row: DetailModelRow, enabled: boolean) => Promise<void>;
 }) {
   return (
-    <div className="border-t border-border">
-      <div className="grid grid-cols-[minmax(0,1fr)_72px_168px] items-center gap-3 bg-background px-5 py-2 text-xs font-medium text-foreground-muted sm:grid-cols-[minmax(0,1fr)_120px_220px] sm:gap-4">
+    <div className="rounded-md border border-border bg-surface">
+      <div className=" rounded-t-md grid grid-cols-[minmax(0,1fr)_72px_56px] items-center gap-3 bg-background px-5 py-2 text-xs font-medium text-foreground-muted sm:grid-cols-[minmax(0,1fr)_120px_72px] sm:gap-4">
         <span>模型名称</span>
         <span className="text-center">启用</span>
         <span className="text-right">操作</span>
       </div>
       {modelRows.map((row) => {
         const entry = row.entry;
+        const multimodal = entry ? entry.supportsVision ?? entry.visionCapable : false;
         return (
-          <div key={row.model} className="grid min-h-12 grid-cols-[minmax(0,1fr)_72px_168px] items-center gap-3 border-t border-border px-5 py-2 transition hover:bg-accent sm:grid-cols-[minmax(0,1fr)_120px_220px] sm:gap-4">
-            <div className="flex min-w-0 flex-col gap-1">
+          <div key={row.model} className="grid min-h-12 grid-cols-[minmax(0,1fr)_72px_56px] items-center gap-3 border-t border-border px-5 py-2 transition hover:bg-accent sm:grid-cols-[minmax(0,1fr)_120px_72px] sm:gap-4">
+            <div className="flex min-w-0 flex-col gap-1.5">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm text-foreground">{entry?.displayName || row.model}</span>
                 {entry?.isDefault && <Badge tone="info">全局默认</Badge>}
               </div>
-              <div className="text-xs text-foreground-muted">上下文：{formatContextLimit(entry?.contextLimit)}</div>
+              {entry && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="group/ctx inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-0.5 text-[11px] font-medium text-foreground-muted transition hover:border-ring hover:text-foreground"
+                    onClick={() => void onSetContextLimit(entry)}
+                    title="点击修改上下文上限"
+                  >
+                    <span>上下文 {formatContextLimit(entry.contextLimit)}</span>
+                    <Pencil className="hidden h-3 w-3 group-hover/ctx:block" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      multimodal
+                        ? "inline-flex items-center gap-1 rounded-full border border-success-border bg-success-subtle px-2.5 py-0.5 text-[11px] font-medium text-success transition"
+                        : "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-0.5 text-[11px] font-medium text-foreground-muted transition hover:text-foreground"
+                    }
+                    onClick={() => void onToggleVision(entry)}
+                    title="点击切换：多模态 / 非多模态"
+                  >
+                    {multimodal ? <Eye className="h-3 w-3" aria-hidden="true" /> : <EyeOff className="h-3 w-3" aria-hidden="true" />}
+                    {multimodal ? "多模态" : "非多模态"}
+                  </button>
+                </div>
+              )}
             </div>
             <div className="flex justify-center">
               <Switch checked={row.enabled} onChange={(value) => void onToggleModel(row, value)} />
             </div>
-            <div className="flex shrink-0 items-center justify-end gap-2 sm:gap-3">
-              <button
-                type="button"
-                className="text-xs font-medium text-primary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={!entry}
-                title={entry ? undefined : "启用后可设置上下文"}
-                onClick={() => entry && void onSetContextLimit(entry)}
-              >
-                设置上下文
-              </button>
+            <div className="flex shrink-0 items-center justify-end">
               <button
                 type="button"
                 className="text-foreground-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"

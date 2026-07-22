@@ -1,5 +1,4 @@
 import { AlertCircle, Cpu, KeyRound, Loader2, RefreshCw, Settings, Zap } from "lucide-react";
-import { WindowDragRegion } from "../../components/layout/WindowDragRegion";
 import { Button } from "../../components/ui";
 
 export type StartupStatus = "checking" | "needs-model" | "error";
@@ -20,7 +19,6 @@ export function StartupPage({
 
   return (
     <main className="relative grid h-screen place-items-center bg-background px-6 text-foreground">
-      <WindowDragRegion className="h-4 w-full" />
       <section className="w-full max-w-[620px]" aria-label="启动配置">
         <div className="mb-8 flex items-center gap-3">
           <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-card text-foreground-secondary">

@@ -1,6 +1,6 @@
-use silicon_agent::skill::builtin;
-use silicon_agent::skill::SkillService;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::skill::builtin;
+use silicon_worker::skill::SkillService;
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 /// 建一个隔离的 (db, skills_root) 测试环境。
@@ -61,10 +61,10 @@ fn sync_indexes_builtin_and_user_skills() {
         .iter()
         .find(|s| s.name == builtin_name)
         .expect("builtin");
-    assert_eq!(builtin.source, silicon_agent::skill::SkillSource::Builtin);
+    assert_eq!(builtin.source, silicon_worker::skill::SkillSource::Builtin);
     assert!(builtin.enabled, "内置默认启用");
     let user = all.iter().find(|s| s.name == "user-one").expect("user");
-    assert_eq!(user.source, silicon_agent::skill::SkillSource::User);
+    assert_eq!(user.source, silicon_worker::skill::SkillSource::User);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn load_body_substitutes_data_dir_name() {
     svc.sync().expect("sync");
     let body = svc.load_body("with-var").expect("load").expect("some");
     assert!(
-        body.contains("~/.siliconagent/skills/"),
+        body.contains("~/.siliconworker/skills/"),
         "应替换 DataDirName：{body}"
     );
     assert!(!body.contains("{{.DataDirName}}"), "占位符不应残留：{body}");

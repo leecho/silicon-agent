@@ -33,7 +33,7 @@ if (!appSource.includes("getAppPlatform") || !appSource.includes("--titlebar-col
   throw new Error("App shell should derive collapsed titlebar spacing from the runtime platform");
 }
 
-if (!appSource.includes("silicon-agent.dev.appPlatform") || !appSource.includes("sw-platform")) {
+if (!appSource.includes("silicon-worker.dev.appPlatform") || !appSource.includes("sw-platform")) {
   throw new Error("App shell should expose a dev-only platform override for titlebar simulation");
 }
 

@@ -1,9 +1,9 @@
 use std::sync::Mutex;
 
-use silicon_agent::provider::client::{
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ModelSelection, ProviderCallError,
 };
-use silicon_agent::provider::fallback::call_with_fallback;
+use silicon_worker::provider::fallback::call_with_fallback;
 
 struct FlakyClient {
     fallback: Option<ModelSelection>,
@@ -38,6 +38,7 @@ impl ModelClient for FlakyClient {
     fn stream_model_with_events(
         &self,
         r: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         _on: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         self.stream_model(r)

@@ -2,13 +2,17 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Brain, CircleX, Loader2, MessageSquareReply, RefreshCw } from "lucide-react";
 import { renderMessageWithChips } from "./messageChips";
 import { AttachmentCard, AttachmentImageModal } from "./AttachmentCard";
+import { QuoteChip } from "./QuoteChip";
 import { extractAttachments } from "../../lib/attachments";
 import { Tooltip } from "../ui/Tooltip";
+import { useNotifications } from "../ui/NotificationProvider";
+import { SelectionMenu } from "./SelectionMenu";
+import { useSelectionQuote } from "./useSelectionQuote";
 import type { Artifact, FeedRow } from "../../types";
 import { Disclosure } from "./Disclosure";
 import { AssistantAnswer } from "./AssistantAnswer";
 import { RoundArtifacts } from "./RoundArtifacts";
-import { StepGroup } from "./MessageFeedToolSteps";
+import { ProcessGroup } from "./MessageFeedToolSteps";
 import { groupRows } from "./messageFeedRows";
 
 export { Disclosure } from "./Disclosure";
@@ -62,6 +66,7 @@ export function MessageFeed({
   onDispatchAgentClick,
   agentDisplayNames,
   thinking,
+  onAddQuote,
 }: {
   /** 当前会话 id（读取附件图片预览用）。 */
   sessionId: string;
@@ -81,9 +86,40 @@ export function MessageFeed({
   onDispatchAgentClick?: (toolCallId: string, expertName: string) => void;
   /** agent name → 展示名（把派发卡里的 image-creator 显示成 珀西）。 */
   agentDisplayNames?: Record<string, string>;
+  /** 划词「添加到对话」：把选中文字交给 Composer 作为引用片段。 */
+  onAddQuote?: (text: string) => void;
 }) {
   // 历史消息里点击图片附件 → 预览的相对路径。
   const [previewRelPath, setPreviewRelPath] = useState<string | null>(null);
+  const notifications = useNotifications();
+  const { selection, clear: clearSelection } = useSelectionQuote();
+
+  // 操作完成后收起菜单：先折叠 DOM 选区（菜单 mousedown preventDefault 阻止了浏览器自动折叠），
+  // 否则 mouseup 的延后 evaluate 会检测到仍存活的选区把菜单再次弹出/重复添加。
+  const dismissSelection = () => {
+    window.getSelection()?.removeAllRanges();
+    clearSelection();
+  };
+
+  const copySelection = async () => {
+    if (!selection) return;
+    try {
+      await navigator.clipboard.writeText(selection.text);
+      notifications.success({ title: "已复制", message: "" });
+    } catch (err) {
+      notifications.error({
+        title: "复制失败",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    dismissSelection();
+  };
+
+  const addSelectionToChat = () => {
+    if (!selection) return;
+    onAddQuote?.(selection.text);
+    dismissSelection();
+  };
   const hasActiveStep = rows.some(
     (row) =>
       row.kind === "tool" &&
@@ -91,13 +127,16 @@ export function MessageFeed({
       row.finishedAt === undefined &&
       (row.status === "running" || row.status === "generating"),
   );
+  // 计时：有运行中工具，或 run 仍活跃（如已派发、正等待子专家返回）时每秒 tick，
+  // 使过程区时长持续增长而非停在最后一个工具完成的时刻。
+  const ticking = hasActiveStep || !!thinking;
   const [stepNow, setStepNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!hasActiveStep) return;
+    if (!ticking) return;
     setStepNow(Date.now());
     const timer = window.setInterval(() => setStepNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [hasActiveStep]);
+  }, [ticking]);
 
   const grouped = groupRows(rows);
   const elements: ReactNode[] = [];
@@ -123,21 +162,27 @@ export function MessageFeed({
       // 进入新一轮：先收口上一轮的产物汇总，再渲染这条 user 消息。
       flushRound();
       currentRoot = row.id;
-      const { attachments, body } = extractAttachments(row.content);
+      const { attachments, quotes, body } = extractAttachments(row.content);
       elements.push(
         <UserMessageBubble
           key={row.id}
+          anchorId={row.id}
           attachments={attachments}
+          quotes={quotes}
           body={body}
           onOpenImage={setPreviewRelPath}
         />,
       );
-    } else if (row.kind === "toolGroup") {
+    } else if (row.kind === "processGroup") {
+      // 末尾过程组且 run 仍活跃（本轮尚未产出最终答案，如正等待子专家）→ 维持运行态、时长增长。
+      const runActive = !!thinking && row === grouped[grouped.length - 1];
       elements.push(
         <div key={row.id} className="min-w-0 max-w-full">
-          <StepGroup
-            steps={row.steps}
+          <ProcessGroup
+            items={row.items}
             now={stepNow}
+            streamingId={streamingId}
+            runActive={runActive}
             onDispatchAgentClick={onDispatchAgentClick}
             agentDisplayNames={agentDisplayNames}
           />
@@ -184,23 +229,13 @@ export function MessageFeed({
           )}
         </div>,
       );
-    } else {
-      // assistant：当前流式行且尚无答案内容 → 思考中（默认展开 + 转动 + 文案切换）。
-      const thinking = streamingId === row.id && row.content.length === 0;
+    } else if (row.kind === "answer") {
+      // 最终答案：常驻。其 reasoning 仍作「深度思考」折叠行（平静态，非「思考中」——
+      // 答案存在即 content 非空；运行中的思考态在 processGroup 里以「思考中…」呈现）。
       elements.push(
         <div key={row.id} className="min-w-0 max-w-full">
           {row.reasoning && row.reasoning.length > 0 && (
-            <Disclosure
-              forceOpen={thinking}
-              icon={
-                thinking ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Brain size={13} aria-hidden="true" />
-                )
-              }
-              label={thinking ? "思考中" : "深度思考"}
-            >
+            <Disclosure icon={<Brain size={13} aria-hidden="true" />} label="深度思考">
               {row.reasoning}
             </Disclosure>
           )}
@@ -229,6 +264,13 @@ export function MessageFeed({
           <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
           思考中…
         </div>
+      )}
+      {selection && (
+        <SelectionMenu
+          rect={selection.rect}
+          onCopy={() => void copySelection()}
+          onAdd={addSelectionToChat}
+        />
       )}
       <AttachmentImageModal
         open={previewRelPath !== null}
@@ -283,11 +325,15 @@ function AskAnswerSummary({ content }: { content: string }) {
 }
 
 function UserMessageBubble({
+  anchorId,
   attachments,
+  quotes,
   body,
   onOpenImage,
 }: {
+  anchorId: string;
   attachments: ReturnType<typeof extractAttachments>["attachments"];
+  quotes: string[];
   body: string;
   onOpenImage: (relPath: string) => void;
 }) {
@@ -297,9 +343,12 @@ function UserMessageBubble({
   const collapsed = collapsible && !expanded;
 
   return (
-    <div className="flex min-w-0 max-w-full justify-end">
+    <div
+      data-feed-msg-id={anchorId}
+      className="flex min-w-0 max-w-full justify-end"
+    >
       <div className="min-w-0 max-w-[78%] rounded-[12px] border border-border bg-primary px-4 py-2.5 text-[#ffffff] shadow-sm">
-        {attachments.length > 0 && (
+        {(attachments.length > 0 || quotes.length > 0) && (
           <div className="mb-2 flex flex-wrap gap-2">
             {attachments.map((a, i) => (
               <AttachmentCard
@@ -309,6 +358,8 @@ function UserMessageBubble({
                 onOpenImage={a.kind === "image" ? () => onOpenImage(a.relPath) : undefined}
               />
             ))}
+            {/* 划词引用：只读合并 chip（无清空按钮），悬浮展开全部片段。 */}
+            <QuoteChip fragments={quotes} />
           </div>
         )}
         {trimmedBody.length > 0 && (

@@ -1,0 +1,212 @@
+name: Release
+
+# 手动触发：在 Actions → Release → Run workflow 选递增级别即可，版本号自动算。
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "版本递增级别（在最新 Release 基础上 +1）"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write   # 发版时给私有仓打 tag（作为下次 changelog 的区间起点）
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 1) 读公开仓库最新 Release 版本，按 bump 自动算下一个版本号。
+  meta:
+    name: Compute next version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - name: Compute next version
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          LATEST=$(gh release view --repo leecho/silicon-worker-release --json tagName -q .tagName 2>/dev/null || true)
+          CUR="${LATEST#v}"
+          [ -z "$CUR" ] && CUR="0.0.0"
+          IFS=. read -r MA MI PA <<< "$CUR"
+          MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+          case "$BUMP" in
+            major) MA=$((MA + 1)); MI=0; PA=0 ;;
+            minor) MI=$((MI + 1)); PA=0 ;;
+            patch) PA=$((PA + 1)) ;;
+          esac
+          VERSION="$MA.$MI.$PA"
+          echo "latest='$LATEST' bump='$BUMP' -> $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple silicon)
+            runner: macos-15
+            target: aarch64-apple-darwin
+            slug: macos-arm64
+          - name: macOS (Intel)
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            slug: macos-x64
+          - name: Windows
+            runner: windows-latest
+            target: ""
+            slug: windows-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.runner }}-${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # 把算出来的版本号写进配置（仅 CI 内临时覆盖，不回写仓库）。
+      - name: Set version
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "Building $VERSION"
+          node -e "const f='src-tauri/tauri.conf.json';const fs=require('fs');const j=JSON.parse(fs.readFileSync(f));j.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Build Tauri client (macOS)
+        if: runner.os == 'macOS'
+        run: npm run tauri:build -- --target ${{ matrix.target }}
+
+      - name: Build Tauri client (Windows)
+        if: runner.os == 'Windows'
+        run: npm run tauri:build
+
+      # 产物归一化成【固定文件名】，站点才能锁定 latest/download 直链。
+      - name: Collect & rename artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            DMG=$(find "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" -name "*.dmg" | head -n1)
+            cp "$DMG" "dist/SiliconWorker-${{ matrix.slug }}.dmg"
+          else
+            EXE=$(find src-tauri/target/release/bundle -type f -name "*-setup.exe" | head -n1)
+            if [ -n "${EXE:-}" ]; then
+              cp "$EXE" "dist/SiliconWorker-windows-x64.exe"
+            else
+              MSI=$(find src-tauri/target/release/bundle -type f -name "*.msi" | head -n1)
+              cp "$MSI" "dist/SiliconWorker-windows-x64.msi"
+            fi
+          fi
+          ls -la dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.slug }}
+          path: dist/*
+          retention-days: 3
+
+  # 2) 汇总三平台产物，发布到公开仓库的 Release（自动生成发布说明）。
+  publish:
+    name: Publish to public repo
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate app token for the public repo
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: leecho
+          repositories: silicon-worker-release
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: build-*
+          merge-multiple: true
+
+      # 用私有源码仓 commit 生成 changelog：区间 = 上一个发布 tag → 现在。
+      - name: Build changelog from source commits
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          PREV=$(git tag --list 'v*' --sort=-creatordate | head -n1 || true)
+          {
+            echo "## ${{ needs.meta.outputs.tag }}"
+            echo
+            if [ -n "$PREV" ]; then
+              git log "$PREV"..HEAD --no-merges --pretty=format:'- %s (%h)'
+              echo
+            else
+              echo "首个发布版本。"
+            fi
+          } > notes.md
+          echo "----- notes.md -----"; cat notes.md
+
+      # 在私有仓打 tag（发布记录 + 下次 changelog 的起点）。用默认 GITHUB_TOKEN，不会触发本 workflow。
+      - name: Tag this release in the source repo
+        run: |
+          set -euo pipefail
+          git tag "${{ needs.meta.outputs.tag }}"
+          git push origin "${{ needs.meta.outputs.tag }}"
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Publish to public GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: leecho/silicon-worker-release
+          token: ${{ steps.app-token.outputs.token }}
+          tag_name: ${{ needs.meta.outputs.tag }}
+          target_commitish: main
+          name: ${{ needs.meta.outputs.tag }}
+          body_path: notes.md
+          files: dist/*

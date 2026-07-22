@@ -5,8 +5,14 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type JSX,
 } from "react";
-import { getAppPlatform, listEnabledModels, type AppPlatform } from "./api";
+import {
+  getAppPlatform,
+  getToolLabels,
+  listEnabledModels,
+  type AppPlatform,
+} from "./api";
 import { Sidebar } from "./components/layout/Sidebar";
 import { WindowDragRegion } from "./components/layout/WindowDragRegion";
 import {
@@ -24,11 +30,16 @@ import type { AppSection } from "./appNavigation";
 import { HomePage } from "./pages/home/HomePage";
 import { SessionPage } from "./pages/session/SessionPage";
 import { SessionDraftPage } from "./pages/session/SessionDraftPage";
+import { setToolLabels } from "./components/session/toolNarrative";
 import { useSession } from "./components/session/SessionProvider";
 import { SessionAttentionNotificationBridge } from "./components/session/SessionAttentionNotificationBridge";
-import { SkillsPage } from "./pages/skills/SkillsPage";
+import { ProjectsPage } from "./pages/projects/ProjectsPage";
+import { AgentsPage } from "./pages/agents/AgentsPage";
 import { RemotePage } from "./pages/remote/RemotePage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
+import { ScheduledTasksPage } from "./pages/scheduling/ScheduledTasksPage";
+import { ExtensionsPage } from "./pages/extensions/ExtensionsPage";
+import { KnowledgeBasesPage } from "./pages/knowledge-bases/KnowledgeBasesPage";
 import { StartupPage, type StartupStatus } from "./pages/startup/StartupPage";
 import { NotificationProvider } from "./components/ui/NotificationProvider";
 import { MessageProvider } from "./components/ui/MessageProvider";
@@ -45,7 +56,7 @@ type SessionChromeStyle = CSSProperties & {
 
 const COLLAPSED_CONTENT_INSET_GAP_PX = 12;
 
-const DEV_APP_PLATFORM_OVERRIDE_KEY = "silicon-agent.dev.appPlatform";
+const DEV_APP_PLATFORM_OVERRIDE_KEY = "silicon-worker.dev.appPlatform";
 
 function isDevBuild(): boolean {
   return ((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV ?? false) === true;
@@ -98,6 +109,10 @@ function AppShell() {
   const [startupStatus, setStartupStatus] = useState<ModelStartupStatus>("checking");
   const [startupError, setStartupError] = useState<string | null>(null);
   useEffect(() => applyTheme((localStorage.getItem("theme") as ThemePreference | null) ?? "system"), []);
+  // 工具叙事标签：启动时拉取后端 Tool::label()（单一真相源）注入叙事模块，先于 feed 渲染。
+  useEffect(() => {
+    void getToolLabels().then(setToolLabels).catch(() => {});
+  }, []);
 
   const refreshStartupStatus = useCallback(async () => {
     setStartupStatus("checking");
@@ -136,15 +151,15 @@ function AppShell() {
   );
 
   const handleTrayOpenProject = useCallback(
-    (_projectId: string) => {
-      navigation.navigate({ section: "home" });
+    (projectId: string) => {
+      navigation.navigate({ section: "projects", projectId });
     },
     [navigation],
   );
 
   const handleTrayOpenAgent = useCallback(
-    (_agentId: string) => {
-      navigation.navigate({ section: "home" });
+    (agentId: string) => {
+      navigation.navigate({ section: "agents", agentId });
     },
     [navigation],
   );
@@ -267,18 +282,97 @@ function AppShellContent({
   const collapsedContentInset =
     measuredCollapsedContentInset ?? titlebarLayout.collapsedContentInsetFallback;
   const sessionChromeStyle: SessionChromeStyle = {
-    "--session-body-padding-inline": sidebarMode === "collapsed" ? "40px" : "0px",
+    "--session-body-padding-inline": sidebarMode === "collapsed" ? "40px" : "8px",
     "--session-header-padding-left": sidebarMode === "collapsed" ? collapsedContentInset : "1rem",
     "--titlebar-collapsed-actions-left": titlebarLayout.collapsedActionsLeft,
   };
   const pages: Record<Exclude<AppSection, "settings">, JSX.Element> = {
     home: (
       <HomePage
+        onOpenAgent={(agentId) => onNavigate({ section: "agents", agentId })}
+        onOpenAgents={() => onNavigate({ section: "agents" })}
+        onOpenProject={(projectId) => onNavigate({ section: "projects", projectId })}
+        onOpenProjects={() => onNavigate({ section: "projects" })}
         onOpenSettings={() => onNavigate({ section: "settings", tab: "model-provider" })}
       />
     ),
     session: <SessionArea />,
-    skills: <SkillsPage />,
+    extensions: (
+      <ExtensionsPage
+        tab={location.section === "extensions" ? location.tab : undefined}
+        // 用 replace：Tab 切换不该塞满前进/后退历史。
+        onSelectTab={(tab) => onReplace({ section: "extensions", tab })}
+      />
+    ),
+    "knowledge-bases": (
+      <KnowledgeBasesPage
+        knowledgeBaseId={
+          location.section === "knowledge-bases" ? location.knowledgeBaseId ?? null : null
+        }
+        onBack={() => {
+          if (canBack) {
+            onBack();
+          } else {
+            onReplace({ section: "knowledge-bases" });
+          }
+        }}
+        onOpenKnowledgeBase={(id) => onNavigate({ section: "knowledge-bases", knowledgeBaseId: id })}
+        onOpenList={() => onNavigate({ section: "knowledge-bases" })}
+      />
+    ),
+    agents: (
+      <AgentsPage
+        agentId={location.section === "agents" ? location.agentId ?? null : null}
+        onBack={() => {
+          if (canBack) {
+            onBack();
+          } else {
+            onReplace({ section: "agents" });
+          }
+        }}
+        onOpenAgent={(agentId) => onNavigate({ section: "agents", agentId })}
+        onOpenAgentList={() => onNavigate({ section: "agents" })}
+        onOpenScheduledTask={(taskId) => onNavigate({ section: "scheduling", taskId })}
+        onNewScheduledTask={(agentId) =>
+          onNavigate({ section: "scheduling", agentId, create: true })
+        }
+      />
+    ),
+    projects: (
+      <ProjectsPage
+        onBack={() => {
+          if (canBack) {
+            onBack();
+          } else {
+            onReplace({ section: "projects" });
+          }
+        }}
+        onOpenProject={(projectId) => onNavigate({ section: "projects", projectId })}
+        onOpenProjectList={() => onNavigate({ section: "projects" })}
+        onOpenScheduledTask={(taskId) => onNavigate({ section: "scheduling", taskId })}
+        onNewScheduledTask={(projectId) =>
+          onNavigate({ section: "scheduling", projectId, create: true })
+        }
+        projectId={location.section === "projects" ? location.projectId ?? null : null}
+      />
+    ),
+    scheduling: (
+      <ScheduledTasksPage
+        agentId={location.section === "scheduling" ? location.agentId ?? null : null}
+        create={location.section === "scheduling" ? Boolean(location.create) : false}
+        onBack={() => {
+          if (canBack) {
+            onBack();
+          } else {
+            onReplace({ section: "scheduling" });
+          }
+        }}
+        onOpenTask={(taskId) => onNavigate({ section: "scheduling", taskId })}
+        onReplace={(nextLocation) => onReplace(nextLocation)}
+        projectId={location.section === "scheduling" ? location.projectId ?? null : null}
+        taskId={location.section === "scheduling" ? location.taskId ?? null : null}
+      />
+    ),
     remote: <RemotePage onOpenSession={(sessionId) => onNavigate({ section: "session", sessionId })} />,
   };
 
@@ -339,12 +433,28 @@ function AppShellContent({
     setSidebarMode((current) => (current === "pinned" ? "collapsed" : "pinned"));
   }
 
+  function handleOpenProject(projectId: string) {
+    onNavigate({ section: "projects", projectId });
+  }
+
+  function handleOpenProjectList() {
+    onNavigate({ section: "projects" });
+  }
+
+  function handleOpenAgent(agentId: string) {
+    onNavigate({ section: "agents", agentId });
+  }
+
+  function handleOpenAgentList() {
+    onNavigate({ section: "agents" });
+  }
+
   return (
     <main
       className="grid h-screen bg-transparent text-foreground transition-[grid-template-columns] duration-150"
       style={{ gridTemplateColumns: sidebarLayout.gridColumns }}
     >
-      <WindowDragRegion className="h-4 w-full" />
+      <WindowDragRegion className="h-5 w-full" />
 
       <div className="relative h-screen overflow-hidden bg-transparent">
         <div
@@ -362,9 +472,15 @@ function AppShellContent({
             canForward={canForward}
             mode={sidebarMode}
             onBack={onBack}
+            onCreateProject={handleOpenProject}
             onForward={onForward}
             onNavigateDraft={(draftId) => onNavigate({ section: "session", draftId })}
             onNavigateSession={(sessionId) => onNavigate({ section: "session", sessionId })}
+            onOpenAgent={handleOpenAgent}
+            onOpenAgentList={handleOpenAgentList}
+            onOpenProject={handleOpenProject}
+            onOpenProjectList={handleOpenProjectList}
+            onOpenRemoteConfig={() => onNavigate({ section: "remote" })}
             onSearch={() => setSessionSearchOpen(true)}
             onSelectSection={(nextSection) => {
               if (nextSection === "settings") {
@@ -374,6 +490,7 @@ function AppShellContent({
               }
             }}
             onToggleMode={toggleSidebarMode}
+            platform={appPlatform}
           />
         </div>
       </div>

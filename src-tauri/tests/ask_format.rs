@@ -1,5 +1,5 @@
-use silicon_agent::commands::format_ask_answers;
-use silicon_agent::session::AskQuestion;
+use silicon_worker::commands::format_ask_answers;
+use silicon_worker::session::AskQuestion;
 
 fn q(header: &str, question: &str, multi: bool, options: &[&str]) -> AskQuestion {
     AskQuestion {

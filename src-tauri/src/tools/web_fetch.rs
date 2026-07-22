@@ -1,5 +1,4 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::time::Duration;
 
 use crate::tools::web_search::{strip_tags, unescape_html};
 use crate::tools::Tool;
@@ -21,6 +20,10 @@ pub struct WebFetch;
 impl Tool for WebFetch {
     fn name(&self) -> &str {
         "web_fetch"
+    }
+
+    fn disclosure(&self) -> crate::tools::Disclosure {
+        crate::tools::Disclosure::Deferred
     }
 
     fn label(&self) -> &str {
@@ -65,49 +68,7 @@ impl Tool for WebFetch {
             .map(|v| (v as usize).clamp(500, MAX_MAX_CHARS))
             .unwrap_or(DEFAULT_MAX_CHARS);
 
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err("仅支持 http/https 链接".into());
-        }
-        // SSRF 防护：拒绝回环/私有/链路本地等非公网目标。
-        match extract_host(url) {
-            Some(host) if is_blocked_host(&host) => {
-                return Err(format!(
-                    "出于安全，拒绝抓取本机/内网地址（{host}）。仅支持公网 http(s) 资源。"
-                ));
-            }
-            None => return Err("无法解析 URL 主机名".into()),
-            _ => {}
-        }
-
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(20))
-            .build();
-        let resp = match agent
-            .get(url)
-            .set("User-Agent", BROWSER_UA)
-            .set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .call()
-        {
-            Ok(resp) => resp,
-            Err(ureq::Error::Status(code, _)) => return Err(fetch_failed(&format!("HTTP {code}"))),
-            Err(err) => return Err(fetch_failed(&err.to_string())),
-        };
-
-        let final_url = resp.get_url().to_string();
-        let is_html = resp.content_type().contains("html");
-        let body = resp
-            .into_string()
-            .map_err(|e| fetch_failed(&format!("读取响应出错: {e}")))?;
-
-        let text = if is_html || looks_like_html(&body) {
-            html_to_text(&body)
-        } else {
-            normalize_text(&body)
-        };
-        if text.is_empty() {
-            return Err(fetch_failed("页面无可提取的文本内容"));
-        }
+        let (final_url, text) = fetch_url_text(url)?;
 
         let (shown, truncated) = truncate_chars(&text, max_chars);
         let mut out = format!("【已抓取 {final_url}】\n\n{shown}");
@@ -128,6 +89,52 @@ fn fetch_failed(detail: &str) -> String {
         "抓取失败（{detail}）。请确认该 URL 可公开访问，或改用 web_search 获取信息；\
          不要反复重试同一地址。"
     )
+}
+
+/// 抓取 URL 并抽取为纯文本（统一 HttpClient + HTML→text 管线）。
+/// 返回 (最终 URL, 正文文本)。供 web_fetch 工具与知识库 URL 导入共用。
+/// 内置 scheme 校验与 SSRF 守卫，两条调用路径统一受保护。
+pub fn fetch_url_text(url: &str) -> Result<(String, String), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(fetch_failed("仅支持 http/https 链接"));
+    }
+    // SSRF 防护：拒绝回环/私有/链路本地等非公网目标。
+    match extract_host(url) {
+        Some(host) if is_blocked_host(&host) => {
+            return Err(fetch_failed(&format!(
+                "出于安全，拒绝抓取本机/内网地址（{host}）。仅支持公网 http(s) 资源。"
+            )));
+        }
+        None => return Err(fetch_failed("无法解析 URL 主机名")),
+        _ => {}
+    }
+    use std::time::Duration;
+    let resp = crate::http::HttpClient::new()
+        .send(
+            crate::http::HttpRequest::get(url)
+                .header("User-Agent", BROWSER_UA)
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                .timeout(Duration::from_secs(20)),
+        )
+        .map_err(|e| fetch_failed(&e.to_string()))?;
+    if !resp.is_success() {
+        return Err(fetch_failed(&format!("HTTP {}", resp.status)));
+    }
+    let final_url = resp.url.clone();
+    let is_html = resp
+        .header("content-type")
+        .map(|c| c.contains("html"))
+        .unwrap_or(false);
+    let body = resp.text();
+    let text = if is_html || looks_like_html(&body) {
+        html_to_text(&body)
+    } else {
+        normalize_text(&body)
+    };
+    if text.is_empty() {
+        return Err(fetch_failed("页面无可提取的文本内容"));
+    }
+    Ok((final_url, text))
 }
 
 /// 从 URL 提取主机名（去 scheme、userinfo、path/query/fragment 与端口）。IPv6 字面量保留方括号。

@@ -9,7 +9,7 @@ pub struct SessionInfo {
     pub group_id: Option<String>,
     /// 会话工作模式："normal"（普通，写工具需确认）| "plan"（计划模式，仅只读工具调研）。默认 normal。
     pub mode: String,
-    /// 用户为该会话显式选择的工作目录（沙箱根）；None 表示用默认 {home}/.siliconagent/{session_id}。
+    /// 用户为该会话显式选择的工作目录（沙箱根）；None 表示用默认 {home}/.siliconworker/{session_id}。
     #[serde(default)]
     pub working_dir: Option<String>,
     /// 该会话的权限模式覆盖（manual/auto/full）；None 表示继承全局默认。
@@ -69,7 +69,7 @@ pub struct SessionInfo {
     /// 运行角色 id：kind="expert" 时为专家 id；kind="team" 时为团队 id。
     #[serde(default)]
     pub role_id: Option<String>,
-    /// 历史遗留列（裁剪后单会话模型不再产生后台派发）；保留为惰性列以兼容旧数据，恒为 false。
+    /// T57：本子运行是否为后台派发（background=true）。后台 child 完成不回填父 dispatch，等 collect_agents 取。
     #[serde(default)]
     pub is_background: bool,
     /// T57：子运行终态 "done"|"failed"|"cancelled"（供 collect 读取；运行中为 None）。

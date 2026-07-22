@@ -339,6 +339,31 @@ impl RemoteStore {
             .map_err(|e| e.to_string())
     }
 
+    /// 切换远程联系人绑定的目标会话，保留账号、上下文 token 和暂停态。
+    pub fn switch_binding_session(
+        &self,
+        channel: &str,
+        peer_id: &str,
+        session_id: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        let changed = self
+            .db
+            .with_connection(|c| {
+                let changed = c.execute(
+                    "update remote_bindings set session_id = ?3, updated_at = ?4 \
+                     where channel = ?1 and peer_id = ?2",
+                    rusqlite::params![channel, peer_id, session_id, now],
+                )?;
+                Ok(changed)
+            })
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("未找到该聊天绑定".into());
+        }
+        Ok(())
+    }
+
     /// 反查某 session 的所有远程绑定（一期通常 0 或 1 条）。
     pub fn list_bindings_for_session(
         &self,
@@ -558,16 +583,8 @@ mod tests {
         assert_eq!(b.context_token.as_deref(), Some("ctx1"));
         assert_eq!(b.pending_kind, None);
         // 切换当前 session
-        s.set_binding(
-            "wechat",
-            "peerA",
-            Some("acct"),
-            None,
-            "sess2",
-            Some("ctx1"),
-            "t1",
-        )
-        .unwrap();
+        s.switch_binding_session("wechat", "peerA", "sess2", "t1")
+            .unwrap();
         assert_eq!(
             s.get_binding("wechat", "peerA")
                 .unwrap()

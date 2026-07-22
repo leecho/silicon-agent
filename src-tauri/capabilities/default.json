@@ -1,13 +1,18 @@
 {
   "identifier": "default",
-  "description": "Default silicon-agent desktop permissions.",
+  "description": "Default silicon-worker desktop permissions.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize",
     "dialog:default",
     "opener:default",
     "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "x-apple.systempreferences:com.apple.preference.security*" }]
+    },
     "notification:default"
   ]
 }

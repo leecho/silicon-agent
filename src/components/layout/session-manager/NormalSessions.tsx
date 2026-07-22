@@ -1,9 +1,12 @@
-import type { ReactNode } from "react";
-import { ChevronRight, FileText, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronRight, FileText, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Trash2, Plus } from "lucide-react";
 import { Tooltip } from "../../../components/ui";
 import type { SessionGroup, SessionInfo } from "../../../types";
 import { GroupRow, ItemRow } from "./SessionRows";
 import { byUpdatedDesc, draftTitle, GroupDot } from "./sessionManagerShared";
+
+// 会话子列表默认展示条数；超过后折叠，「展开显示」每次多显示这么多条。
+const PAGE_SIZE = 5;
 
 export function NormalSessions({
   busySessionId,
@@ -13,6 +16,7 @@ export function NormalSessions({
   groups,
   onDeleteGroup,
   onEditGroup,
+  onNewSession,
   onOpenDraft,
   onOpenSession,
   onOpenSessionMenu,
@@ -26,6 +30,8 @@ export function NormalSessions({
   groups: SessionGroup[];
   onDeleteGroup: (group: SessionGroup) => void;
   onEditGroup: (group: SessionGroup) => void;
+  /** 会话区表头的悬浮「新会话」按钮（对齐项目区的 hover 操作）。 */
+  onNewSession: () => void;
   onOpenDraft: (sessionId: string) => void;
   onOpenSession: (sessionId: string) => void;
   onOpenSessionMenu: (sessionId: string, x: number, y: number) => void;
@@ -46,6 +52,51 @@ export function NormalSessions({
   const recent = visible
     .filter((s) => !s.pinned && !s.groupId)
     .sort(byUpdatedDesc);
+
+  // 每个会话子列表默认最多显示 PAGE_SIZE 条；点击「展开显示」每次多显示 PAGE_SIZE 条，
+  // 点击「折叠显示」收回到 PAGE_SIZE 条。按分组 key 各自记住展开上限。
+  const [limits, setLimits] = useState<Record<string, number>>({});
+  const limitFor = (key: string) => limits[key] ?? PAGE_SIZE;
+  const showMore = (key: string) =>
+    setLimits((current) => ({ ...current, [key]: limitFor(key) + PAGE_SIZE }));
+  const collapseList = (key: string) =>
+    setLimits((current) => ({ ...current, [key]: PAGE_SIZE }));
+
+  function renderPaged(key: string, list: SessionInfo[]) {
+    const limit = limitFor(key);
+    const hasMore = list.length > limit;
+    const canCollapse = limit > PAGE_SIZE;
+    return (
+      <>
+        {list.slice(0, limit).map(sessionRow)}
+        {list.length > PAGE_SIZE && (
+          <div
+            className="flex items-center gap-3 py-1 text-[12px] text-foreground-muted"
+            style={{ paddingLeft: 25 }}
+          >
+            {hasMore && (
+              <button
+                type="button"
+                onClick={() => showMore(key)}
+                className="transition hover:text-foreground"
+              >
+                展开显示
+              </button>
+            )}
+            {canCollapse && (
+              <button
+                type="button"
+                onClick={() => collapseList(key)}
+                className="transition hover:text-foreground"
+              >
+                折叠显示
+              </button>
+            )}
+          </div>
+        )}
+      </>
+    );
+  }
 
   function renderSessionActions(session: SessionInfo) {
     const busy = busySessionId === session.id;
@@ -182,6 +233,21 @@ export function NormalSessions({
           aria-hidden="true"
         />
         <span className="min-w-0 flex-1" />
+        <span className="flex max-w-0 shrink-0 items-center gap-1 overflow-hidden opacity-0 transition-all duration-150 group-hover:ml-1 group-hover:max-w-[44px] group-hover:opacity-100 group-focus-within:ml-1 group-focus-within:max-w-[44px] group-focus-within:opacity-100">
+          <Tooltip content="新会话">
+            <button
+              type="button"
+              aria-label="新会话"
+              onClick={(event) => {
+                event.stopPropagation();
+                onNewSession();
+              }}
+              className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-foreground-muted transition hover:bg-accent hover:text-foreground"
+            >
+              <Plus className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </Tooltip>
+        </span>
       </div>
       {sectionExpanded && (
         <div className="flex flex-col gap-0.5">
@@ -194,7 +260,7 @@ export function NormalSessions({
                   label="置顶"
                   onToggle={() => onToggleCollapsed("__pinned__")}
                 >
-                  {pinned.map(sessionRow)}
+                  {renderPaged("__pinned__", pinned)}
                 </GroupRow>
               )}
               {groupSections.map(({ group, members }) =>
@@ -212,7 +278,7 @@ export function NormalSessions({
                     )}
                     onToggle={() => onToggleCollapsed(`group:${group.id}`)}
                   >
-                    {members.map(sessionRow)}
+                    {renderPaged(`group:${group.id}`, members)}
                   </GroupRow>
                 ) : null,
               )}
@@ -223,7 +289,7 @@ export function NormalSessions({
                   label="最近"
                   onToggle={() => onToggleCollapsed("__recent__")}
                 >
-                  {recent.map(sessionRow)}
+                  {renderPaged("__recent__", recent)}
                 </GroupRow>
               )}
             </>

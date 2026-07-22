@@ -90,6 +90,36 @@ impl ProviderStore {
             }
             Ok(())
         })?;
+        // 既有库幂等补列：provider_models.supports_vision（每模型 vision 能力覆盖，NULL=用内置表）。
+        self.db.with_connection(|c| {
+            let has: i64 = c.query_row(
+                "select count(*) from pragma_table_info('provider_models') where name = 'supports_vision'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                c.execute(
+                    "alter table provider_models add column supports_vision integer",
+                    [],
+                )?;
+            }
+            Ok(())
+        })?;
+        // 既有库幂等补列：providers.protocol（调用协议，默认 openai）。
+        self.db.with_connection(|c| {
+            let has: i64 = c.query_row(
+                "select count(*) from pragma_table_info('providers') where name = 'protocol'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                c.execute(
+                    "alter table providers add column protocol text not null default 'openai'",
+                    [],
+                )?;
+            }
+            Ok(())
+        })?;
         // 一次性迁移：旧版本把 provider 的 fallback_model_id 存在跨模块共享表 app_settings 里；
         // 现 fallback 设置归 provider 独占的 provider_settings。若旧表存在且本表尚无该键，则搬过来
         // （insert or ignore，幂等）。app_settings 现由 AppSettingsStore 独占，此处只读旧值、不再写它。
@@ -289,20 +319,27 @@ pub(super) fn provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pro
         enabled: enabled != 0,
         last_check,
         sort_order: row.get(9)?,
+        protocol: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "openai".into()),
     })
 }
 
 pub(super) fn model_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelView> {
     let enabled: i64 = row.get(4)?;
     let is_default: i64 = row.get(5)?;
+    let model: String = row.get(2)?;
+    let supports_vision = row.get::<_, Option<i64>>(8)?.map(|v| v != 0);
+    let vision_capable =
+        crate::provider::model::resolved_supports_vision(&model, supports_vision);
     Ok(ModelView {
         id: row.get(0)?,
         provider_id: row.get(1)?,
-        model: row.get(2)?,
+        model,
         display_name: row.get(3)?,
         enabled: enabled != 0,
         is_default: is_default != 0,
         sort_order: row.get(6)?,
         context_limit: row.get(7)?,
+        supports_vision,
+        vision_capable,
     })
 }

@@ -16,12 +16,17 @@ export function WindowDragRegion({ className = "h-7" }: { className?: string }) 
     }
   }
 
+  async function toggleMaximized() {
+    await getCurrentWindow().toggleMaximize()
+  }
+
   return (
     <div
       {...WINDOW_DRAG_REGION_PROPS}
       aria-hidden="true"
       className={`absolute inset-x-0 top-0 z-10 cursor-default ${className}`}
       onPointerDown={startDragging}
+      onDoubleClick={toggleMaximized}
     />
   );
 }

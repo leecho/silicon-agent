@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use silicon_agent::engine::{Engine, PendingInteraction};
-use silicon_agent::provider::client::ModelClient;
-use silicon_agent::provider::message::ModelToolCall;
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::{RiskLevel, Tool, ToolRegistry};
+use silicon_worker::engine::{Engine, PendingInteraction};
+use silicon_worker::provider::client::ModelClient;
+use silicon_worker::provider::message::ModelToolCall;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::{RiskLevel, Tool, ToolRegistry};
 
 /// 不会被调用的占位 client：pending_interaction 只读持久化消息，不触模型。
 struct NoClient;

@@ -11,27 +11,48 @@ import {
 import { useMessages } from "../../components/ui";
 import { useSession } from "../session/SessionProvider";
 import type { SessionGroup, SessionInfo } from "../../types";
+import { AgentSessions } from "./session-manager/AgentSessions";
+import { AgentSessionActionMenu } from "./session-manager/AgentSessionActionMenu";
 import { GroupFormModal } from "./session-manager/GroupFormModal";
 import { NormalSessions } from "./session-manager/NormalSessions";
+import { ProjectSessions } from "./session-manager/ProjectSessions";
+import { ProjectSessionActionMenu } from "./session-manager/ProjectSessionActionMenu";
 import { RemoteSessions } from "./session-manager/RemoteSessions";
 import { SessionActionMenu } from "./session-manager/SessionActionMenu";
 import { type GroupForm, remoteChannels } from "./session-manager/sessionManagerShared";
 import { useSessionManagerData } from "./session-manager/useSessionManagerData";
+import { AgentBuilderDrawer } from "../../pages/agents/AgentBuilderDrawer";
+import { NewProjectModal } from "../../pages/projects/NewProjectModal";
 
 // 会话管理（收进主 Sidebar 中部）：项目、智能体、普通会话/草稿和远程连接入口的组合层。
 // 数据加载和订阅集中在 useSessionManagerData；各形态 session 的节点投影在对应组件内。
 export function SessionManager({
+  onCreateProject,
   onNavigateDraft,
   onNavigateSession,
+  onOpenAgent,
+  onOpenAgentList,
+  onOpenProject,
+  onOpenProjectList,
+  onOpenRemoteConfig,
 }: {
+  onCreateProject: (projectId: string) => void;
   onNavigateDraft: (draftId: string) => void;
   onNavigateSession: (sessionId: string) => void;
+  onOpenAgent: (agentId: string) => void;
+  onOpenAgentList: () => void;
+  onOpenProject: (projectId: string) => void;
+  onOpenProjectList: () => void;
+  onOpenRemoteConfig: () => void;
 }) {
   const messages = useMessages();
   const {
     currentSessionId,
     openSession,
     sessionRefreshKey,
+    enterDraft,
+    enterDraftWithAgent,
+    enterDraftWithProject,
   } = useSession();
   const {
     groups,
@@ -55,11 +76,19 @@ export function SessionManager({
   const [groupForm, setGroupForm] = useState<GroupForm | null>(null);
   const [groupName, setGroupName] = useState("");
   const [groupColor, setGroupColor] = useState("#0090FF");
+  const [agentCreateOpen, setAgentCreateOpen] = useState(false);
+  const [agentRefreshKey, setAgentRefreshKey] = useState(0);
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false);
+  const [projectRefreshKey, setProjectRefreshKey] = useState(0);
 
   const menuSession = sessions.find((session) => session.id === menuSessionId) ?? null;
-  const normalMenuSession = menuSession;
+  const projectMenuSession = menuSession?.projectId ? menuSession : null;
+  const agentMenuSession =
+    menuSession && !menuSession.projectId && menuSession.agentId ? menuSession : null;
+  const normalMenuSession =
+    menuSession && !menuSession.projectId && !menuSession.agentId ? menuSession : null;
   const userSessionCount = sessions.filter(
-    (s) => !s.origin || s.origin === "user",
+    (s) => (!s.origin || s.origin === "user") && !s.projectId && !s.agentId,
   ).length;
   const remoteChannelIds = new Set(remoteChannels.map((channel) => channel.id));
   const remoteSessionIds = new Set(
@@ -127,6 +156,8 @@ export function SessionManager({
     try {
       await renameSession(session.id, name);
       await refreshAll();
+      if (session.projectId) setProjectRefreshKey((key) => key + 1);
+      if (!session.projectId && session.agentId) setAgentRefreshKey((key) => key + 1);
     } catch (err) {
       notifyError("重命名失败", err);
     }
@@ -153,6 +184,8 @@ export function SessionManager({
           openSession(null);
         }
       }
+      if (session.projectId) setProjectRefreshKey((key) => key + 1);
+      if (!session.projectId && session.agentId) setAgentRefreshKey((key) => key + 1);
     } catch (err) {
       notifyError("删除失败", err);
     } finally {
@@ -166,6 +199,8 @@ export function SessionManager({
     try {
       await setSessionPinned(session.id, !session.pinned);
       await refreshAll();
+      if (session.projectId) setProjectRefreshKey((key) => key + 1);
+      if (!session.projectId && session.agentId) setAgentRefreshKey((key) => key + 1);
     } catch (err) {
       notifyError(session.pinned ? "取消置顶失败" : "置顶失败", err);
     } finally {
@@ -239,6 +274,28 @@ export function SessionManager({
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-6">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto">
+          <ProjectSessions
+            busySessionId={busySessionId}
+            currentSessionId={currentSessionId}
+            onCreateProject={() => setProjectCreateOpen(true)}
+            onOpenProject={onOpenProject}
+            onOpenProjectList={onOpenProjectList}
+            onOpenProjectSessionMenu={openSessionMenu}
+            onOpenSession={onNavigateSession}
+            onNewProjectSession={enterDraftWithProject}
+            refreshKey={`${sessionRefreshKey}:${projectRefreshKey}`}
+          />
+          <AgentSessions
+            busySessionId={busySessionId}
+            currentSessionId={currentSessionId}
+            onCreateAgent={() => setAgentCreateOpen(true)}
+            onOpenAgent={onOpenAgent}
+            onOpenAgentList={onOpenAgentList}
+            onOpenAgentSessionMenu={openSessionMenu}
+            onOpenSession={onNavigateSession}
+            onNewAgentSession={(agentId) => enterDraftWithAgent(agentId)}
+            refreshKey={`${sessionRefreshKey}:${agentRefreshKey}`}
+          />
           <NormalSessions
             busySessionId={busySessionId}
             collapsed={collapsed}
@@ -247,6 +304,7 @@ export function SessionManager({
             groups={groups}
             onDeleteGroup={(group) => void handleDeleteGroup(group)}
             onEditGroup={handleEditGroup}
+            onNewSession={() => enterDraft()}
             onOpenDraft={onNavigateDraft}
             onOpenSession={onNavigateSession}
             onOpenSessionMenu={openSessionMenu}
@@ -255,6 +313,7 @@ export function SessionManager({
           />
           <RemoteSessions
             currentSessionId={currentSessionId}
+            onOpenRemoteConfig={onOpenRemoteConfig}
             onOpenSession={onNavigateSession}
             onToggleChannel={toggleRemoteChannel}
             remoteBindings={remoteBindings}
@@ -277,6 +336,26 @@ export function SessionManager({
         />
       )}
 
+      {agentMenuSession && (
+        <AgentSessionActionMenu
+          menuPosition={menuPosition}
+          menuSession={agentMenuSession}
+          onDelete={(session) => void handleDelete(session)}
+          onRename={(session) => void handleRename(session)}
+          onTogglePinned={(session) => void handleTogglePinned(session)}
+        />
+      )}
+
+      {projectMenuSession && (
+        <ProjectSessionActionMenu
+          menuPosition={menuPosition}
+          menuSession={projectMenuSession}
+          onDelete={(session) => void handleDelete(session)}
+          onRename={(session) => void handleRename(session)}
+          onTogglePinned={(session) => void handleTogglePinned(session)}
+        />
+      )}
+
       <GroupFormModal
         groupColor={groupColor}
         groupForm={groupForm}
@@ -287,6 +366,27 @@ export function SessionManager({
         onGroupNameChange={setGroupName}
       />
 
+      {projectCreateOpen && (
+        <NewProjectModal
+          onClose={() => setProjectCreateOpen(false)}
+          onCreated={(project) => {
+            setProjectCreateOpen(false);
+            setProjectRefreshKey((key) => key + 1);
+            onCreateProject(project.id);
+          }}
+          notifyErr={(msg) => notifyError("新增项目失败", msg)}
+        />
+      )}
+
+      <AgentBuilderDrawer
+        open={agentCreateOpen}
+        onClose={() => setAgentCreateOpen(false)}
+        onCreated={(agent) => {
+          setAgentCreateOpen(false);
+          setAgentRefreshKey((key) => key + 1);
+          onOpenAgent(agent.id);
+        }}
+      />
     </>
   );
 }

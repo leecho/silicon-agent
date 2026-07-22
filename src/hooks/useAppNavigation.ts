@@ -1,17 +1,40 @@
 import { useCallback, useMemo, useReducer } from "react";
 import type { AppSection } from "../appNavigation";
+import type { ExtensionTabId } from "../pages/extensions/extensionTabs";
 import type { SettingsTabId } from "../pages/settings/settingsTabs";
 
 export type AppLocation =
   | { section: "home" }
   | { section: "session"; sessionId?: string | null; draftId?: string | null }
+  | { section: "agents"; agentId?: string | null }
+  | { section: "knowledge-bases"; knowledgeBaseId?: string | null }
+  | { section: "projects"; projectId?: string | null }
+  | { section: "extensions"; tab?: ExtensionTabId }
+  | {
+      section: "scheduling";
+      taskId?: string | null;
+      projectId?: string | null;
+      agentId?: string | null;
+      create?: boolean;
+    }
   | {
       section: "settings";
       tab?: SettingsTabId;
       providerPresetKey?: string | null;
       providerId?: string | null;
     }
-  | { section: Exclude<AppSection, "session" | "settings"> };
+  | {
+      section: Exclude<
+        AppSection,
+        | "session"
+        | "agents"
+        | "knowledge-bases"
+        | "projects"
+        | "scheduling"
+        | "settings"
+        | "extensions"
+      >;
+    };
 
 export interface AppNavigationState {
   backStack: AppLocation[];
@@ -40,6 +63,37 @@ export function locationsEqual(left: AppLocation, right: AppLocation): boolean {
           ((right as Extract<AppLocation, { section: "session" }>).sessionId ?? null) &&
         (left.draftId ?? null) ===
           ((right as Extract<AppLocation, { section: "session" }>).draftId ?? null)
+      );
+    case "agents":
+      return (
+        (left.agentId ?? null) ===
+        ((right as Extract<AppLocation, { section: "agents" }>).agentId ?? null)
+      );
+    case "knowledge-bases":
+      return (
+        (left.knowledgeBaseId ?? null) ===
+        ((right as Extract<AppLocation, { section: "knowledge-bases" }>).knowledgeBaseId ?? null)
+      );
+    case "projects":
+      return (
+        (left.projectId ?? null) ===
+        ((right as Extract<AppLocation, { section: "projects" }>).projectId ?? null)
+      );
+    case "scheduling": {
+      const rightScheduling = right as Extract<AppLocation, { section: "scheduling" }>;
+      return (
+        (left.taskId ?? null) === (rightScheduling.taskId ?? null) &&
+        (left.projectId ?? null) === (rightScheduling.projectId ?? null) &&
+        (left.agentId ?? null) === (rightScheduling.agentId ?? null) &&
+        Boolean(left.create) === Boolean(rightScheduling.create)
+      );
+    }
+    // 必须比 tab：否则「同 section 即同位置」会让 replace 判定无变化而丢弃切 Tab
+    // （表现为扩展页永远停在落地的「市场」Tab）。
+    case "extensions":
+      return (
+        (left.tab ?? null) ===
+        ((right as Extract<AppLocation, { section: "extensions" }>).tab ?? null)
       );
     case "settings":
       return (

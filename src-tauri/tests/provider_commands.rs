@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use silicon_agent::provider::{ModelInput, ProviderInput, ProviderStore};
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::provider::{ModelInput, ProviderInput, ProviderStore};
+use silicon_worker::storage::AppDatabase;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -19,7 +19,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
         .unwrap_or_default()
         .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "silicon-agent-{tag}_{}_{}_{nanos}",
+        "silicon-worker-{tag}_{}_{}_{nanos}",
         std::process::id(),
         seq,
     ));
@@ -65,6 +65,7 @@ fn upsert_then_list_returns_redacted_view() {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("sk-plain-secret-1234".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "1717545600",
         )
@@ -78,6 +79,7 @@ fn upsert_then_list_returns_redacted_view() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1717545600",
         )

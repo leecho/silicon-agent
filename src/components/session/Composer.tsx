@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, CircleX, ClipboardList, Layers, Loader2, MessageSquare, Square } from "lucide-react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ForwardedRef } from "react";
+import { ArrowUp, BookMarked, Bot, CircleX, ClipboardList, ImageOff, Layers, Loader2, MessageSquare, Square, Users, Wand2 } from "lucide-react";
 import { AddMenu } from "../../pages/session/composer/AddMenu";
 import { ModelPicker } from "../../pages/session/composer/ModelPicker";
 import { PermissionPicker } from "../../pages/session/composer/PermissionPicker";
@@ -9,7 +9,8 @@ import { SessionUsageChip } from "../../pages/session/composer/SessionUsageChip"
 import { ComposerInput, type ComposerInputHandle } from "./ComposerInput";
 import { AttachmentCard, AttachmentImageModal } from "./AttachmentCard";
 import { QueuedMessages } from "./QueuedMessages";
-import { listSessionWorkspaceFiles, listSkills } from "../../api";
+import { QuoteChip } from "./QuoteChip";
+import { enhanceMessage, kbList, kbMount, kbMountedIds, kbUnmount, listPlugins, listSessionWorkspaceFiles, listSkills } from "../../api";
 import {
   attachmentKind,
   basename,
@@ -18,8 +19,11 @@ import {
 import { Tooltip } from "../ui/Tooltip";
 import type {
   Agent,
+  ExpertSummary,
+  Team,
   ContextUsageView,
   EnabledProviderModels,
+  KnowledgeBase,
   PermissionMode,
   Project,
   QueuedTask,
@@ -54,12 +58,19 @@ function RunActivityInline({ activity }: { activity: RunActivity }) {
   );
 }
 
-export function Composer({
+export interface ComposerHandle {
+  /** 把一段文字作为引用片段加入输入区（划词「添加到对话」调用）。 */
+  addQuote: (text: string) => void;
+}
+
+export const Composer = forwardRef(function Composer({
   sessionId,
   disabled,
   onSubmit,
+  onEnsureSessionId,
   onStop,
   running,
+  stopping,
   projects,
   selectedProjectId,
   agents,
@@ -74,6 +85,11 @@ export function Composer({
   modelGroups,
   selectedModelId,
   onPickModel,
+  teams,
+  roleExperts,
+  roleKind,
+  roleId,
+  onPickRole,
   planMode,
   onTogglePlan,
   permissionMode,
@@ -100,8 +116,12 @@ export function Composer({
   sessionId: string;
   disabled: boolean;
   onSubmit: (text: string) => Promise<void>;
+  /** 草稿场景：惰性物化草稿为真会话并返回其 id（挂载资料库等需要真 id 时调用）。 */
+  onEnsureSessionId?: () => Promise<string | null>;
   onStop?: () => void;
   running?: boolean;
+  /** 已点停止、等待后端收口：STOP 键切「停止中」并禁用，避免重复点击与「点了没反应」。 */
+  stopping?: boolean;
   projects?: Project[];
   selectedProjectId?: string | null;
   /** 可选持久智能体（绑定后用其专属工作目录 + 私有记忆）。 */
@@ -124,6 +144,16 @@ export function Composer({
   selectedModelId?: string | null;
   /** 选择某模型（null 表示用默认）。 */
   onPickModel?: (modelId: string | null) => void;
+  /** 可选团队（角色槽下拉）。 */
+  teams?: Team[];
+  /** 可选散装 agent（角色槽「专家」分组）。 */
+  roleExperts?: ExpertSummary[];
+  /** 当前运行角色类型（""/"expert"/"team"）。 */
+  roleKind?: string | null;
+  /** 当前运行角色 id（expert name 或 team id）。 */
+  roleId?: string | null;
+  /** 选择角色（kind 空串 = 自由模式）。 */
+  onPickRole?: (kind: string, id: string) => void;
   /** 是否处于计划模式（session.mode === "plan"）。 */
   planMode?: boolean;
   /** 切换计划模式（与 /plan 等价）。 */
@@ -166,7 +196,7 @@ export function Composer({
   queuedTasks?: QueuedTask[];
   /** T70：取消某条排队消息。 */
   onCancelQueued?: (itemId: string) => void;
-}) {
+}, ref: ForwardedRef<ComposerHandle>) {
   const inputRef = useRef<ComposerInputHandle | null>(null);
   const attachIdRef = useRef(0);
   const [hasText, setHasText] = useState((initialContent ?? "").trim().length > 0);
@@ -175,6 +205,21 @@ export function Composer({
   );
   const [previewRelPath, setPreviewRelPath] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [quoteFragments, setQuoteFragments] = useState<string[]>([]);
+  // 增强消息：进行中态、失败提示。
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhanceError, setEnhanceError] = useState<string | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      addQuote: (text: string) => {
+        const t = text.trim();
+        if (t) setQuoteFragments((prev) => [...prev, t]);
+      },
+    }),
+    [],
+  );
 
   // 把当前附件 + 正文序列化为整条待发内容（与提交时一致），供草稿保存。
   const serializeAll = (text: string) =>
@@ -194,12 +239,34 @@ export function Composer({
   }, [attachments]);
   // 已启用技能（/ 菜单与 [+] 添加共用）；窗口聚焦时刷新，设置页改动即时生效。
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [pluginNameById, setPluginNameById] = useState<Record<string, string>>({});
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [mountedKbIds, setMountedKbIds] = useState<string[]>([]);
   useEffect(() => {
     const reload = () => {
-      void listSkills()
-        .then((all) => setSkills(all.filter((s) => s.enabled)))
-        .catch(console.error);
+      void Promise.allSettled([listSkills(), listPlugins()]).then(
+        ([skillResult, pluginResult]) => {
+          if (skillResult.status === "fulfilled") {
+            setSkills(skillResult.value.filter((s) => s.enabled));
+          } else {
+            console.error(skillResult.reason);
+          }
+
+          if (pluginResult.status === "fulfilled") {
+            setPluginNameById(
+              Object.fromEntries(
+                pluginResult.value.map((plugin) => [
+                  plugin.id,
+                  plugin.displayName || plugin.name || plugin.id,
+                ]),
+              ),
+            );
+          } else {
+            console.error(pluginResult.reason);
+          }
+        },
+      );
     };
     reload();
     window.addEventListener("focus", reload);
@@ -225,6 +292,50 @@ export function Composer({
       window.removeEventListener("focus", reload);
     };
   }, [sessionId, workspacePath]);
+
+  // 资料库列表（供 + 菜单选择）。
+  useEffect(() => {
+    void kbList()
+      .then(setKnowledgeBases)
+      .catch(() => setKnowledgeBases([]));
+  }, []);
+
+  // 当前会话已挂载的资料库（草稿无 sessionId 时为空，挂载会惰性建会话）。
+  useEffect(() => {
+    if (!sessionId) {
+      setMountedKbIds([]);
+      return;
+    }
+    void kbMountedIds(sessionId)
+      .then(setMountedKbIds)
+      .catch(() => setMountedKbIds([]));
+  }, [sessionId]);
+
+  // 挂/卸资料库到当前会话；草稿时先物化会话再挂。
+  const toggleKb = async (kbId: string) => {
+    const id = sessionId || (onEnsureSessionId ? await onEnsureSessionId() : null);
+    if (!id) return;
+    const on = mountedKbIds.includes(kbId);
+    const prev = mountedKbIds;
+    setMountedKbIds(on ? mountedKbIds.filter((x) => x !== kbId) : [...mountedKbIds, kbId]);
+    try {
+      if (on) await kbUnmount(kbId, id);
+      else await kbMount(kbId, id);
+    } catch {
+      setMountedKbIds(prev);
+    }
+  };
+
+  const clearMountedKbs = async () => {
+    if (!sessionId || mountedKbIds.length === 0) return;
+    const prev = mountedKbIds;
+    setMountedKbIds([]);
+    try {
+      await Promise.all(prev.map((id) => kbUnmount(id, sessionId)));
+    } catch {
+      setMountedKbIds(prev);
+    }
+  };
 
   const addAttachment = (relPath: string) => {
     const name = basename(relPath);
@@ -258,25 +369,56 @@ export function Composer({
     })();
   };
 
-  const hasInput = hasText || attachments.length > 0;
+  const hasInput = hasText || attachments.length > 0 || quoteFragments.length > 0;
   const canSend = !disabled && !submitting && hasInput;
   // T70：运行中默认显示停止按钮；一旦用户有输入（文本/附件）就切回发送按钮，让其把消息入队。
   const showStop = running && !hasInput;
 
-  // 真正发送：把附件序列化为前置的 ⟦@相对路径⟧ 行 + 正文；父级确认成功后再清空。
+  // T78：所选模型不支持图像识别 + 含图片附件 → 非阻断提示（图片会以文件名形式发送）。
+  const selectedModel = (modelGroups ?? [])
+    .flatMap((g) => g.models)
+    .find((m) => m.id === selectedModelId);
+  const showVisionWarning =
+    attachments.some((a) => a.kind === "image") &&
+    selectedModel?.visionCapable === false;
+
+  // 真正发送：附件 ⟦@相对路径⟧ + 引用片段 ⟦引用：文本⟧ + 正文，前置拼接；父级确认成功后再清空。
+  // 引用以标记承载（与附件同源）：用户消息里渲染成 chip；后端去括号后模型看到「引用：文本」。
+  // 文本内的 ⟦⟧ 会破坏标记配对，序列化时剔除。
   const doSubmit = async (text: string) => {
     if (disabled || submitting) return;
     const attachPart = attachments.map((a) => `⟦@${a.relPath}⟧`).join("\n");
-    const full = [attachPart, text].filter((s) => s.trim()).join("\n\n");
+    const quotePart = quoteFragments
+      .map((q) => `⟦引用：${q.replace(/[⟦⟧]/g, "")}⟧`)
+      .join("\n");
+    const full = [attachPart, quotePart, text].filter((s) => s.trim()).join("\n\n");
     if (!full.trim()) return;
     setSubmitting(true);
     try {
       await onSubmit(full);
       inputRef.current?.clear();
       setAttachments([]);
+      setQuoteFragments([]);
       setHasText(false);
+      setEnhanceError(null);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // 增强消息：把当前正文润色 + 补全为清晰提示词，直接替换输入框正文。
+  const doEnhance = async () => {
+    const cur = inputRef.current?.getText() ?? "";
+    if (!cur.trim() || enhancing) return;
+    setEnhancing(true);
+    setEnhanceError(null);
+    try {
+      const enhanced = await enhanceMessage(cur, sessionId);
+      inputRef.current?.setText(enhanced);
+    } catch (e) {
+      setEnhanceError(typeof e === "string" ? e : "增强失败，请重试");
+    } finally {
+      setEnhancing(false);
     }
   };
 
@@ -307,6 +449,36 @@ export function Composer({
       {queuedTasks && onCancelQueued && (
         <QueuedMessages tasks={queuedTasks} onCancel={onCancelQueued} />
       )}
+      {/* T78：非阻断提示——所选模型不支持图像识别时，图片仅以文件名形式发送 */}
+      {showVisionWarning && (
+        <div
+          role="note"
+          className="flex items-center gap-1.5 px-1 pb-0.5 text-[12px] text-foreground-muted"
+        >
+          <ImageOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>当前模型不支持图像识别，图片将以文件名形式发送</span>
+        </div>
+      )}
+      {/* 增强消息进行中：Loading 提示（输入框同时只读，避免改写覆盖用户新输入） */}
+      {enhancing && (
+        <div
+          role="status"
+          className="ui-activity-breathe relative flex items-center gap-1.5 overflow-hidden rounded-lg px-2 py-1 text-[12px] text-muted-foreground"
+        >
+          <Loader2 className="relative z-10 h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+          <span className="relative z-10">正在增强消息…</span>
+        </div>
+      )}
+      {/* 增强消息失败：非阻断提示，原文不变 */}
+      {enhanceError && !enhancing && (
+        <div
+          role="note"
+          className="flex items-center gap-1.5 px-1 pb-0.5 text-[12px] text-foreground-muted"
+        >
+          <Wand2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>{enhanceError}</span>
+        </div>
+      )}
       {/* 主输入容器：边框圆角，内含 附件区 + 编辑区 + 工具栏 */}
       <div className="relative rounded-xl border border-border bg-background focus-within:border-primary">
         {attachments.length > 0 && (
@@ -324,9 +496,14 @@ export function Composer({
             ))}
           </div>
         )}
+        {quoteFragments.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            <QuoteChip fragments={quoteFragments} onClear={() => setQuoteFragments([])} />
+          </div>
+        )}
         <ComposerInput
           ref={inputRef}
-          disabled={disabled}
+          disabled={disabled || enhancing}
           skills={skills}
           workspaceFiles={workspaceFiles}
           initialContent={initialContent}
@@ -341,12 +518,51 @@ export function Composer({
         {/* 框内工具栏 */}
         <div className="flex items-center gap-2 px-2 py-2">
           <AddMenu
+            pluginNameById={pluginNameById}
             planMode={planMode}
             skills={skills}
+            knowledgeBases={knowledgeBases}
+            mountedKbIds={mountedKbIds}
+            onToggleKb={(id) => void toggleKb(id)}
             onTogglePlan={onTogglePlan}
             onPickSkill={(s) => inputRef.current?.insertSkill(s)}
             onAddFile={() => void addFileFromPicker()}
+            roleValue={onPickRole ? { kind: roleKind ?? "", id: roleId ?? "" } : undefined}
+            teams={teams}
+            roleExperts={roleExperts}
+            onPickRole={onPickRole}
           />
+          {mountedKbIds.length > 0 && (
+            <Tooltip
+              content={
+                <span className="block max-w-[240px]">
+                  {mountedKbIds
+                    .map((id) => knowledgeBases.find((k) => k.id === id)?.name ?? "资料库")
+                    .join("、")}
+                </span>
+              }
+            >
+              <div className="group/kb-chip flex cursor-default items-center gap-1 rounded-md px-2 py-1.5 text-xs text-foreground-secondary transition hover:bg-accent">
+                <button
+                  type="button"
+                  aria-label="移除资料库"
+                  onClick={() => {
+                    if (mountedKbIds.length === 1) void toggleKb(mountedKbIds[0]);
+                    else void clearMountedKbs();
+                  }}
+                  className="grid h-4 w-4 cursor-pointer place-items-center rounded-sm text-foreground-muted transition hover:bg-muted hover:text-foreground"
+                >
+                  <BookMarked className="h-3.5 w-3.5 group-hover/kb-chip:hidden" aria-hidden="true" />
+                  <CircleX className="hidden h-3.5 w-3.5 group-hover/kb-chip:block" aria-hidden="true" />
+                </button>
+                <span className="max-w-[140px] truncate">
+                  {mountedKbIds.length === 1
+                    ? knowledgeBases.find((k) => k.id === mountedKbIds[0])?.name ?? "资料库"
+                    : `${mountedKbIds.length} 知识库`}
+                </span>
+              </div>
+            </Tooltip>
+          )}
           {planMode && onTogglePlan && (
             <Tooltip content="计划模式：先只读调研、提交计划等你批准后再执行">
               <div className="group/plan-chip flex cursor-default items-center gap-1 rounded-md px-2 py-1.5 text-xs text-foreground-secondary transition hover:bg-accent">
@@ -363,7 +579,56 @@ export function Composer({
               </div>
             </Tooltip>
           )}
+          {/* 角色 chip：选了专家/团队时显示，点击复位默认（默认态零占用） */}
+          {onPickRole && roleKind && (roleKind === "expert" || roleKind === "team") && (
+            <Tooltip content={roleKind === "team" ? "当前团队，点击复位默认" : "当前专家，点击复位默认"}>
+              <div className="group/role-chip flex cursor-default items-center gap-1 rounded-md px-2 py-1.5 text-xs text-foreground-secondary transition hover:bg-accent">
+                <button
+                  type="button"
+                  aria-label="复位为默认角色"
+                  onClick={() => onPickRole("", "")}
+                  className="grid h-4 w-4 cursor-pointer place-items-center rounded-sm text-foreground-muted transition hover:bg-muted hover:text-foreground"
+                >
+                  {roleKind === "team" ? (
+                    <>
+                      <Users className="h-3.5 w-3.5 group-hover/role-chip:hidden" aria-hidden="true" />
+                      <CircleX className="hidden h-3.5 w-3.5 group-hover/role-chip:block" aria-hidden="true" />
+                    </>
+                  ) : (
+                    <>
+                      <Bot className="h-3.5 w-3.5 group-hover/role-chip:hidden" aria-hidden="true" />
+                      <CircleX className="hidden h-3.5 w-3.5 group-hover/role-chip:block" aria-hidden="true" />
+                    </>
+                  )}
+                </button>
+                <span className="max-w-[120px] truncate">
+                  {roleKind === "team"
+                    ? (teams ?? []).find((t) => t.id === roleId)?.displayName ?? "团队"
+                    : (() => {
+                        const ex = (roleExperts ?? []).find((a) => a.name === roleId);
+                        return ex?.displayName || ex?.name || "专家";
+                      })()}
+                </span>
+              </div>
+            </Tooltip>
+          )}
           <div className="flex-1" />
+          {/* 增强消息：把草稿润色 + 补全为清晰提示词（右簇，权限左侧，无边框） */}
+          <Tooltip content="增强消息：润色并补全为更清晰的提示词">
+            <button
+              type="button"
+              aria-label="增强消息"
+              onClick={() => void doEnhance()}
+              disabled={disabled || enhancing || !hasText}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-foreground-secondary transition hover:bg-accent hover:text-foreground disabled:opacity-40"
+            >
+              {enhancing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+            </button>
+          </Tooltip>
           {onChangePermission && (
             <PermissionPicker
               value={permissionMode ?? null}
@@ -377,14 +642,19 @@ export function Composer({
             onPick={(id) => onPickModel?.(id)}
           />
           {showStop ? (
-            <Tooltip content="停止">
+            <Tooltip content={stopping ? "停止中…" : "停止"}>
               <button
                 type="button"
-                aria-label="停止"
+                aria-label={stopping ? "停止中" : "停止"}
                 onClick={onStop}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive transition hover:opacity-90"
+                disabled={stopping}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive transition hover:opacity-90 disabled:opacity-60"
               >
-                <Square className="h-3.5 w-3.5" aria-hidden="true" />
+                {stopping ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Square className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
               </button>
             </Tooltip>
           ) : (
@@ -456,4 +726,4 @@ export function Composer({
       />
     </div>
   );
-}
+});

@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 
 /// EchoClient that emits 2 ThinkingDeltas + 1 Delta + completed.
 struct ThinkingEchoClient;
@@ -15,6 +15,7 @@ impl ModelClient for ThinkingEchoClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         on_event(ModelEvent::ThinkingDelta { text: "想".into() });

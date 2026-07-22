@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- T90：日历/提醒/备忘录工具所需的 macOS TCC 用途说明。
+       EventKit（日历/提醒）首次访问、自动化（备忘录）首次发 AppleEvent 时由系统弹窗展示。 -->
+  <key>NSCalendarsUsageDescription</key>
+  <string>用于读取和管理你的日历事件。</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>用于读取和管理你的日历事件。</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>用于读取和管理你的提醒事项。</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>用于读取和管理你的提醒事项。</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>用于通过「备忘录」应用读写你的笔记。</string>
+</dict>
+</plist>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   cleanupEmptyDrafts,
+  getSession,
   listSessions,
   listSessionGroups,
   subscribeAgentStreamEvents,
@@ -96,13 +97,20 @@ export function useSessionManagerData({
     if (sessionRefreshKey === 0) return;
     let cancelled = false;
     refreshAll()
-      .then((list) => {
+      .then(async (list) => {
         if (cancelled) return;
         if (
           currentSessionId &&
           !list.some((session) => session.id === currentSessionId)
         ) {
-          notifyError("当前会话已不存在", "请从列表重新选择一个会话。");
+          // 列表只含顶层会话；子会话（如打开的专家子会话）本就不在其中，不能据此判定「不存在」。
+          // 真正查不到该会话时才提示，避免在子会话里批准权限等操作后误报。
+          const stillExists = await getSession(currentSessionId)
+            .then((s) => s !== null)
+            .catch(() => true);
+          if (!cancelled && !stillExists) {
+            notifyError("当前会话已不存在", "请从列表重新选择一个会话。");
+          }
         }
       })
       .catch((err) => {

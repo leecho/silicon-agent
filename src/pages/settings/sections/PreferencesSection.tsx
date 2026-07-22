@@ -2,24 +2,23 @@ import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Eye,
+  Lightbulb,
   MonitorCog,
   Moon,
   PanelRightOpen,
-  ShieldCheck,
   Sun,
 } from "lucide-react";
 import {
-  getGlobalPermissionMode,
   getSessionTaskPanelDefaultVisible,
   getShowCompletedProcess,
-  setGlobalPermissionMode,
+  getSuggestionsEnabled,
   setSessionTaskPanelDefaultVisible,
   setShowCompletedProcess,
+  setSuggestionsEnabled,
 } from "../../../api";
-import { Select, Switch, Tooltip, useNotifications } from "../../../components/ui";
+import { Switch, useNotifications } from "../../../components/ui";
 import { applyTheme, type ThemePreference } from "../../../lib/theme";
 import { ChoiceCard, SettingItem } from "../../../components/settings/SettingsControls";
-import type { PermissionMode } from "../../../types";
 
 type ThemeValue = "system" | "light" | "dark";
 
@@ -49,60 +48,33 @@ const THEME_OPTIONS: {
   },
 ];
 
-const PERMISSION_OPTIONS: {
-  description: string;
-  label: string;
-  value: PermissionMode;
-}[] = [
-  {
-    description: "每次工具调用都需要手动审批，适合需要精细控制的场景。",
-    label: "手动审批",
-    value: "manual",
-  },
-  {
-    description: "低风险操作自动放行，高风险操作仍需审批，平衡效率与安全。",
-    label: "自动审批",
-    value: "auto",
-  },
-  {
-    description: "所有工具调用均自动放行，适合完全信任的场景。",
-    label: "完全权限",
-    value: "full",
-  },
-];
-
 function readStoredTheme(): ThemeValue {
   const stored = localStorage.getItem("theme");
   if (stored === "light" || stored === "dark" || stored === "system") return stored;
   return "system";
 }
 
-/** 基础偏好 section：主题选择 + 默认权限模式。 */
+/** 常规 section：主题、界面显示偏好与快捷建议。 */
 export function PreferencesSection() {
   const notify = useNotifications();
   const [theme, setTheme] = useState<ThemeValue>(readStoredTheme);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>("manual");
   const [showCompletedProcess, setShowCompletedProcessState] = useState(true);
   const [sessionTaskPanelDefaultVisible, setSessionTaskPanelDefaultVisibleState] =
     useState(true);
+  const [suggestionsOn, setSuggestionsOn] = useState(true);
 
   useEffect(() => {
-    getGlobalPermissionMode().then(setPermissionMode).catch(() => {});
     getShowCompletedProcess().then(setShowCompletedProcessState).catch(() => {});
     getSessionTaskPanelDefaultVisible()
       .then(setSessionTaskPanelDefaultVisibleState)
       .catch(() => {});
+    getSuggestionsEnabled().then(setSuggestionsOn).catch(() => {});
   }, []);
 
   function selectTheme(value: ThemeValue) {
     setTheme(value);
     applyTheme(value as ThemePreference);
     localStorage.setItem("theme", value);
-  }
-
-  async function selectPermissionMode(value: PermissionMode) {
-    setPermissionMode(value);
-    await setGlobalPermissionMode(value);
   }
 
   async function toggleShowCompletedProcess(value: boolean) {
@@ -125,8 +97,18 @@ export function PreferencesSection() {
     }
   }
 
+  async function toggleSuggestions(value: boolean) {
+    setSuggestionsOn(value);
+    try {
+      await setSuggestionsEnabled(value);
+    } catch (err) {
+      notify.error({ title: "快捷建议设置失败", message: String(err) });
+      setSuggestionsOn(!value);
+    }
+  }
+
   return (
-    <section className="grid gap-8" aria-label="基础偏好">
+    <section className="grid gap-8" aria-label="常规">
       <div>
         <h3 className="mb-4 text-base font-semibold text-foreground">主题</h3>
         <div className="grid gap-4 md:grid-cols-3">
@@ -143,26 +125,6 @@ export function PreferencesSection() {
         </div>
       </div>
       <div className="settings-section-surface overflow-hidden rounded-lg border border-border bg-surface">
-        <SettingItem
-          title="默认权限模式"
-          description="新会话默认的权限强度；可在会话内单独覆盖。"
-          icon={ShieldCheck}
-        >
-          <Select
-            className="text-sm h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none transition focus:border-ring"
-            value={permissionMode}
-            tooltip="默认权限模式"
-            options={PERMISSION_OPTIONS}
-            onChange={(value) => { void selectPermissionMode(value as PermissionMode); }}
-            renderOption={(option) => (
-              <Tooltip content={option.description}>
-              <span className="min-w-0">
-                <span className="block truncate">{option.label}</span>
-              </span>
-                </Tooltip>
-            )}
-          />
-        </SettingItem>
         <SettingItem
           title="显示已完成轮次的思考与执行过程"
           description="关闭后，已完成的历史轮次只显示用户消息和最终回复；当前正在运行的轮次仍显示实时思考与工具执行。"
@@ -182,6 +144,13 @@ export function PreferencesSection() {
             checked={sessionTaskPanelDefaultVisible}
             onChange={(value) => void toggleSessionTaskPanelDefaultVisible(value)}
           />
+        </SettingItem>
+        <SettingItem
+          title="快捷建议"
+          description="每轮结束后用大模型生成「下一步」建议，点击可填入输入框。关闭可省一次模型调用。"
+          icon={Lightbulb}
+        >
+          <Switch checked={suggestionsOn} onChange={(value) => void toggleSuggestions(value)} />
         </SettingItem>
       </div>
     </section>

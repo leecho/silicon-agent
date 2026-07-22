@@ -42,11 +42,11 @@ impl Tool for ReadFile {
             .and_then(|v| v.as_str())
             .ok_or("缺少 path")?;
         let resolved = resolve_in_workspace(&self.workspace, path)?;
-        let meta = std::fs::metadata(&resolved).map_err(|e| format!("读取失败: {e}"))?;
+        let meta = std::fs::metadata(&resolved).map_err(|e| crate::permissions::describe_read_error(&e, &resolved.display().to_string()))?;
         if meta.len() > 5 * 1024 * 1024 {
             return Err("文件过大(>5MB)".into());
         }
-        let text = std::fs::read_to_string(&resolved).map_err(|e| format!("读取失败: {e}"))?;
+        let text = std::fs::read_to_string(&resolved).map_err(|e| crate::permissions::describe_read_error(&e, &resolved.display().to_string()))?;
         let lines: Vec<&str> = text.lines().collect();
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let limit = args

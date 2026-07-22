@@ -1,7 +1,7 @@
 // 用伪造的 OpenAI 流式 SSE 行驱动归一化，验证 delta 累积 + tool_call 识别 + finish。不触网。
-use silicon_agent::provider::call::normalize_chat_completion_response;
-use silicon_agent::provider::call::normalize_chat_completion_stream_lines;
-use silicon_agent::provider::ModelEvent;
+use silicon_worker::provider::call::normalize_chat_completion_response;
+use silicon_worker::provider::call::normalize_chat_completion_stream_lines;
+use silicon_worker::provider::ModelEvent;
 
 #[test]
 fn stream_lines_normalize_to_assistant_text() {

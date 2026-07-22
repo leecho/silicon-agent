@@ -9,6 +9,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/clear", usage: "/clear", description: "清空当前会话显示(不删除历史)" },
   { name: "/rename", usage: "/rename [新名称]", description: "重命名当前会话" },
   { name: "/stop", usage: "/stop", description: "停止当前运行" },
+  { name: "/memory", usage: "/memory", description: "查看长期记忆" },
   { name: "/compact", usage: "/compact", description: "压缩较早对话以省上下文" },
   { name: "/plan", usage: "/plan", description: "开启/关闭计划模式" },
   { name: "/help", usage: "/help", description: "显示可用命令" },

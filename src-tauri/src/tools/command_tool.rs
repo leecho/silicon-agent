@@ -15,6 +15,8 @@ enum CommandOutcome {
         stderr: String,
     },
     TimedOut,
+    /// run 级取消标记置位 → 已 kill 子进程并中止等待。
+    Cancelled,
 }
 
 /// 非 shell 结构化执行 + 超时可终止。stdout/stderr 用读取线程避免管道满死锁;
@@ -24,6 +26,7 @@ fn run_command(
     args: &[String],
     cwd: &str,
     timeout_ms: u64,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<CommandOutcome, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
@@ -68,6 +71,14 @@ fn run_command(
                 });
             }
             Ok(None) => {
+                // run 级停止：立即 kill 子进程，不留后台僵尸（L2 立即停止）。
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = out_handle.join();
+                    let _ = err_handle.join();
+                    return Ok(CommandOutcome::Cancelled);
+                }
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -131,6 +142,15 @@ impl Tool for CommandExecute {
     }
 
     fn execute(&self, args: &serde_json::Value) -> Result<String, String> {
+        // 无取消标记路径：永不取消，行为等同改造前。
+        self.execute_cancellable(args, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    fn execute_cancellable(
+        &self,
+        args: &serde_json::Value,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, String> {
         let program = args
             .get("program")
             .and_then(|v| v.as_str())
@@ -157,8 +177,9 @@ impl Tool for CommandExecute {
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
-        match run_command(program, &cmd_args, &cwd_str, timeout_ms)? {
+        match run_command(program, &cmd_args, &cwd_str, timeout_ms, cancel)? {
             CommandOutcome::TimedOut => Err(format!("命令超时(>{timeout_ms}ms)")),
+            CommandOutcome::Cancelled => Err("命令执行已被停止".into()),
             CommandOutcome::Exited {
                 code,
                 stdout,
@@ -176,5 +197,34 @@ impl Tool for CommandExecute {
                 Ok(result)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+
+    /// 取消已置位时，长命令必须被立即 kill 并快速返回（不等满 timeout_ms）。
+    #[test]
+    fn execute_cancellable_kills_running_command_promptly() {
+        let tool = CommandExecute {
+            workspace: std::env::temp_dir(),
+        };
+        let args = serde_json::json!({
+            "program": "sleep",
+            "args": ["30"],
+            "timeout_ms": 120_000,
+        });
+        let cancel = AtomicBool::new(true); // 预置取消
+        let start = Instant::now();
+        let result = tool.execute_cancellable(&args, &cancel);
+        assert!(
+            start.elapsed().as_secs() < 2,
+            "取消已置位应 ~20ms 内杀子进程，实际耗时 {:?}",
+            start.elapsed()
+        );
+        assert_eq!(result, Err("命令执行已被停止".into()));
     }
 }

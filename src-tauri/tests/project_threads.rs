@@ -1,6 +1,6 @@
 // T59 P1 Task5：项目线程 store——set_project_id + list_project_threads（只列顶层、不含 child）。
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 fn store() -> SessionStore {

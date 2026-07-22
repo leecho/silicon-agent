@@ -125,9 +125,15 @@ pub fn reset_orphaned_head(items: &mut Vec<SessionTaskItem>) -> Option<SessionTa
     }
 }
 
-/// 入队判定：仅当"有在飞队头且长度 ≥ cap"才溢出；无在飞队头一律提升（含 halt 残留的更早项）。
-pub fn decide_enqueue(items: &[SessionTaskItem], cap: usize) -> EnqueueOutcome {
-    if !head_running(items) {
+/// 入队判定：忙态由调用方显式传入 `is_busy`（T91 P2：以 RAII 运行锁为唯一真相，不再读持久化队头）。
+/// 空闲（`!is_busy`，运行锁已释放）→ 立即提升运行队头（含 halt 残留的更早项）；
+/// 忙且长度 ≥ cap → 溢出；忙且未满 → 排队。
+///
+/// 为何不再看 `head_running`：持久化的 Running 队头靠"约定"在各终止路径重置，漏一处就永久卡"忙"。
+/// 而内存运行锁（`RunGuard`）在每条退出路径（panic/reject/finish）RAII 释放，构造上不会卡死——
+/// 所以入队的忙态以它为准；持久化队头仍维护（FIFO + reconcile 跨崩溃孤儿检测），只是入队不再信它。
+pub fn decide_enqueue(items: &[SessionTaskItem], cap: usize, is_busy: bool) -> EnqueueOutcome {
+    if !is_busy {
         EnqueueOutcome::PromoteNow
     } else if items.len() >= cap {
         EnqueueOutcome::Overflow
@@ -147,6 +153,70 @@ pub fn drain_decision(kind: TaskKind, reason: &str) -> DrainAction {
         },
         "cancelled" => DrainAction::DrainAll,
         _ => DrainAction::Noop,
+    }
+}
+
+/// 终止/结束的语义。`settle_session` 据此收口队头（见 T91 spec §3.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleOutcome {
+    /// 正常结束：pop 队头 + 提升下一个 queued。
+    Completed,
+    /// 失败：UserMessage=halt-and-hold（弹队头、不续跑）；AgentTask=清空整队。
+    Failed,
+    /// 用户停止：清空整队（与既有 DrainAll/cancelled 语义一致），不续跑。
+    Cancelled,
+    /// 用户拒绝权限/计划：等价 Cancelled（清空整队，不续跑）。
+    Rejected,
+    /// 孤儿（进程死/挂死）：弹幽灵 Running 队头、不续跑。
+    Interrupted,
+}
+
+/// 纯函数：按终态收口队列；返回「应立即提升运行的下一项」（仅 Completed 续跑，已置 Running）。
+/// 不变量：除 Completed 的 pop+promote 外，收口后队头一律非 Running。
+///
+/// 与既有 `drain_decision` 的语义映射：
+/// - `Completed`      → `PopAndPromote`
+/// - `Failed`/User    → `HaltAndHold`（弹队头，保留其余 queued）
+/// - `Failed`/Agent   → `DrainAll`
+/// - `Cancelled`      → `DrainAll`（与既有 "cancelled"→DrainAll 一致）
+/// - `Rejected`       → `DrainAll`（等价 Cancelled）
+/// - `Interrupted`    → 弹幽灵 Running 队头（等价 `reset_orphaned_head`）
+pub fn settle_queue(items: &mut Vec<SessionTaskItem>, outcome: SettleOutcome) -> Option<SessionTaskItem> {
+    if items.is_empty() {
+        return None;
+    }
+    match outcome {
+        SettleOutcome::Completed => {
+            // 弹队头；若还有 queued，提升为 Running 返回。
+            items.remove(0);
+            if let Some(next) = items.first_mut() {
+                next.status = TaskStatus::Running;
+                Some(next.clone())
+            } else {
+                None
+            }
+        }
+        SettleOutcome::Failed => {
+            // 按队头 kind：UserMessage=弹队头、其余保留为 queued、不续跑（halt-and-hold）；
+            // AgentTask=清空整队（与既有 DrainAll 语义一致）。
+            match items[0].kind {
+                TaskKind::UserMessage => { items.remove(0); }
+                TaskKind::AgentTask => { items.clear(); }
+            }
+            None
+        }
+        SettleOutcome::Cancelled | SettleOutcome::Rejected => {
+            // 清空整队（与既有 drain_decision "cancelled"→DrainAll 一致）。
+            items.clear();
+            None
+        }
+        SettleOutcome::Interrupted => {
+            // 幽灵 Running 队头：弹掉、不续跑（与 reset_orphaned_head 同义但收敛静止）。
+            if head_running(items) {
+                items.remove(0);
+            }
+            None
+        }
     }
 }
 
@@ -188,10 +258,11 @@ pub fn enqueue_into_store(
     session_id: &str,
     mut item: SessionTaskItem,
     is_member: bool,
+    is_busy: bool,
     now: &str,
 ) -> Result<EnqueueResult, String> {
     let mut items = parse_queue(store.get_pending_tasks(session_id)?.as_deref());
-    match decide_enqueue(&items, cap_for(is_member)) {
+    match decide_enqueue(&items, cap_for(is_member), is_busy) {
         EnqueueOutcome::Overflow => Ok(EnqueueResult::Overflow),
         EnqueueOutcome::Queued => {
             item.status = TaskStatus::Queued;
@@ -246,6 +317,169 @@ pub fn drain_after_finish(
         DrainAction::DrainAll => {
             store.set_pending_tasks(session_id, None, now)?;
             Ok(DrainNext::Idle)
+        }
+    }
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    fn item(id: &str, kind: TaskKind, status: TaskStatus) -> SessionTaskItem {
+        SessionTaskItem {
+            item_id: id.into(), kind, payload: id.into(), tool_call_id: None,
+            parent_session_id: None, status, enqueued_at: "0".into(),
+        }
+    }
+    fn running_then_queued(n: usize) -> Vec<SessionTaskItem> {
+        let mut v = vec![item("h", TaskKind::UserMessage, TaskStatus::Running)];
+        for i in 0..n { v.push(item(&format!("q{i}"), TaskKind::UserMessage, TaskStatus::Queued)); }
+        v
+    }
+
+    #[test]
+    fn completed_pops_head_and_promotes_next() {
+        let mut v = running_then_queued(2);
+        let next = settle_queue(&mut v, SettleOutcome::Completed);
+        assert_eq!(v.len(), 2);                       // head popped
+        assert!(head_running(&v));                     // next promoted to Running
+        assert_eq!(next.unwrap().item_id, v[0].item_id);
+    }
+
+    #[test]
+    fn completed_on_single_clears_queue() {
+        let mut v = running_then_queued(0);
+        let next = settle_queue(&mut v, SettleOutcome::Completed);
+        assert!(v.is_empty());
+        assert!(next.is_none());
+        assert!(!head_running(&v));
+    }
+
+    #[test]
+    fn cancelled_and_rejected_clear_running_head_no_promote() {
+        for oc in [SettleOutcome::Cancelled, SettleOutcome::Rejected] {
+            let mut v = running_then_queued(2);
+            let next = settle_queue(&mut v, oc);
+            assert!(!head_running(&v), "{oc:?}: head must not stay Running");
+            assert!(next.is_none(), "{oc:?}: terminal stop never auto-promotes");
+        }
+    }
+
+    #[test]
+    fn interrupted_clears_running_head() {
+        let mut v = running_then_queued(1);
+        let next = settle_queue(&mut v, SettleOutcome::Interrupted);
+        assert!(!head_running(&v));
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn failed_user_message_halts_holds_rest_no_running_head() {
+        let mut v = running_then_queued(2); // head is UserMessage
+        let next = settle_queue(&mut v, SettleOutcome::Failed);
+        assert!(!head_running(&v));          // head not Running
+        assert!(next.is_none());             // halt-and-hold: no auto-promote
+    }
+
+    // T91 P2-T1：入队忙态以显式 is_busy（RAII 运行锁）为唯一真相，不再看持久化 Running 队头。
+    #[test]
+    fn enqueue_busy_source_is_explicit_not_head_status() {
+        let cap = 10;
+        // 关键修复点：即使队列有 Running 队头，只要 is_busy=false（运行锁已释放）→ PromoteNow。
+        // 这正是「卡死 Running 队头」不再误导入队的保证。
+        let mut stuck = vec![item("h", TaskKind::UserMessage, TaskStatus::Running)];
+        assert_eq!(decide_enqueue(&stuck, cap, false), EnqueueOutcome::PromoteNow);
+        // 忙（锁在飞）+ 未满 → Queued。
+        assert_eq!(decide_enqueue(&stuck, cap, true), EnqueueOutcome::Queued);
+        // 忙 + 满 → Overflow。
+        for i in 0..cap { stuck.push(item(&format!("q{i}"), TaskKind::UserMessage, TaskStatus::Queued)); }
+        assert_eq!(decide_enqueue(&stuck, cap, true), EnqueueOutcome::Overflow);
+        // 空闲 + 满 → 仍 PromoteNow（忙态只看 is_busy）。
+        assert_eq!(decide_enqueue(&stuck, cap, false), EnqueueOutcome::PromoteNow);
+    }
+
+    // 核心回归：终止/拒绝收口后，新消息应 PromoteNow 而非误入队（T91 P1-T5）。
+    // 复现场景：session 有「Running 队头 + 至少一个 Queued 尾」→ settle(Rejected/Cancelled/
+    // Interrupted/Failed) → 队头不再 Running → decide_enqueue 返回 PromoteNow（不卡住）。
+    #[test]
+    fn settled_head_lets_next_message_promote_not_queue() {
+        let stop_outcomes = [
+            SettleOutcome::Cancelled,
+            SettleOutcome::Rejected,
+            SettleOutcome::Interrupted,
+        ];
+        for oc in stop_outcomes {
+            // 队列：Running 队头 + 一个已排队的尾（原 bug：收口失败导致头仍 Running→PromoteNow 变 Queued）
+            let mut items = vec![
+                item("h", TaskKind::UserMessage, TaskStatus::Running),
+                item("q0", TaskKind::UserMessage, TaskStatus::Queued),
+            ];
+            settle_queue(&mut items, oc);
+
+            // 1. 收口后队头不能是 Running（核心不变量）
+            assert!(!head_running(&items),
+                "{oc:?}: 收口后队头必须非 Running");
+
+            // 2. 收口后运行锁已释放（is_busy=false）→ 新消息 PromoteNow（不再卡在 Queued 状态）
+            let enqueue_decision = decide_enqueue(&items, MAIN_CAP, false);
+            assert_eq!(enqueue_decision, EnqueueOutcome::PromoteNow,
+                "{oc:?}: 收口后新消息应 PromoteNow，不能 Queued 或 Overflow");
+        }
+
+        // Failed(UserMessage)：halt-and-hold，队头非 Running，剩余项保留，新消息 PromoteNow
+        {
+            let mut items = vec![
+                item("h", TaskKind::UserMessage, TaskStatus::Running),
+                item("q0", TaskKind::UserMessage, TaskStatus::Queued),
+            ];
+            settle_queue(&mut items, SettleOutcome::Failed);
+            assert!(!head_running(&items), "Failed: 收口后队头必须非 Running");
+            // halt-and-hold 保留 q0，运行锁已释放（is_busy=false）→ 新消息 PromoteNow
+            assert_eq!(decide_enqueue(&items, MAIN_CAP, false), EnqueueOutcome::PromoteNow,
+                "Failed(halt-and-hold): 运行锁已释放，新消息应 PromoteNow");
+        }
+
+        // 单队头（无尾）的 Interrupted：等价 reset_orphaned_head，结果一致
+        {
+            let mut items_settle = vec![item("h", TaskKind::UserMessage, TaskStatus::Running)];
+            settle_queue(&mut items_settle, SettleOutcome::Interrupted);
+
+            let mut items_orphan = vec![item("h", TaskKind::UserMessage, TaskStatus::Running)];
+            reset_orphaned_head(&mut items_orphan);
+
+            assert_eq!(items_settle, items_orphan,
+                "单队头 Interrupted: settle_queue 与 reset_orphaned_head 结果必须一致");
+        }
+    }
+
+    // 不变量属性测试：任意 0..=4 项、首项 Running 与否、任意终态 → 收口后 head 非 Running
+    // （Completed 且原队列>1 例外：它故意提升下一项为 Running）。
+    #[test]
+    fn invariant_terminal_outcome_never_leaves_running_head() {
+        let kinds = [TaskKind::UserMessage, TaskKind::AgentTask];
+        let outcomes = [
+            SettleOutcome::Completed, SettleOutcome::Failed,
+            SettleOutcome::Cancelled, SettleOutcome::Rejected, SettleOutcome::Interrupted,
+        ];
+        for n in 0..=4usize {
+            for head_running_init in [true, false] {
+                for k in kinds {
+                    for oc in outcomes {
+                        let mut v: Vec<SessionTaskItem> = (0..n).map(|i| {
+                            let st = if i == 0 && head_running_init { TaskStatus::Running } else { TaskStatus::Queued };
+                            item(&format!("i{i}"), k, st)
+                        }).collect();
+                        let had_more = v.len() > 1;
+                        settle_queue(&mut v, oc);
+                        if oc == SettleOutcome::Completed && had_more {
+                            // Completed 提升下一项为 Running，属预期
+                            continue;
+                        }
+                        assert!(!head_running(&v),
+                            "invariant broken: n={n} head_running_init={head_running_init} kind={k:?} outcome={oc:?}");
+                    }
+                }
+            }
         }
     }
 }

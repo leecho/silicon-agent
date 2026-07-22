@@ -14,6 +14,12 @@ use crate::storage::AppDatabase;
 const DEFAULT_MAX_ITERATIONS: u32 = 24;
 const MAX_ITERATIONS_MIN: u32 = 1;
 const MAX_ITERATIONS_MAX: u32 = 100;
+pub(crate) const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 30;
+const TOOL_TIMEOUT_MIN: u64 = 1; // 0 由工具级 timeout_secs() 表达「不超时」，不经全局
+const TOOL_TIMEOUT_MAX: u64 = 1800; // 30 分钟硬上限
+pub(crate) const DEFAULT_TOOL_PARALLELISM: u64 = 8;
+const TOOL_PARALLELISM_MIN: u64 = 1; // 1 = 退化为串行（逃生舱）
+const TOOL_PARALLELISM_MAX: u64 = 32;
 const DEFAULT_AUTO_COMPACT_THRESHOLD_PCT: u32 = 90;
 const AUTO_COMPACT_THRESHOLD_MIN: u32 = 50;
 const AUTO_COMPACT_THRESHOLD_MAX: u32 = 95;
@@ -104,6 +110,16 @@ impl AppSettingsStore {
         self.set_raw(key, if value { "1" } else { "0" })
     }
 
+    /// 读字符串配置；缺失返回空串。
+    fn get_str(&self, key: &str) -> Result<String, String> {
+        Ok(self.get_raw(key)?.unwrap_or_default())
+    }
+
+    /// 写字符串配置。
+    fn set_str(&self, key: &str, value: &str) -> Result<(), String> {
+        self.set_raw(key, value)
+    }
+
     // ── 具象访问器 ────────────────────────────────────────────────────────────────
 
     /// 读全局默认权限模式；未设置时返回 "manual"。
@@ -169,6 +185,46 @@ impl AppSettingsStore {
         self.set_bool("model_call_log_enabled", enabled)
     }
 
+    /// 桌面操作（computer use）总开关（默认关）。关闭时前端不暴露桌面操作入口，
+    /// computer 工具不会被会话启用。开启需用户显式授权 + 系统辅助功能权限。
+    pub fn get_computer_use_enabled(&self) -> Result<bool, String> {
+        self.get_bool("computer_use_enabled", false)
+    }
+
+    pub fn set_computer_use_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.set_bool("computer_use_enabled", enabled)
+    }
+
+    /// 浏览器操作总开关（默认关）。关闭时前端不暴露浏览器操作入口，browser 工具不会被会话启用。
+    pub fn get_browser_use_enabled(&self) -> Result<bool, String> {
+        self.get_bool("browser_use_enabled", false)
+    }
+
+    pub fn set_browser_use_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.set_bool("browser_use_enabled", enabled)
+    }
+
+    /// 浏览器无头模式（默认关=有窗）。开启则不弹可见窗口，建议仅用于抓取/检索。
+    pub fn get_browser_headless(&self) -> Result<bool, String> {
+        self.get_bool("browser_headless", false)
+    }
+
+    pub fn set_browser_headless(&self, enabled: bool) -> Result<(), String> {
+        self.set_bool("browser_headless", enabled)
+    }
+
+    /// 浏览器空闲多久（分钟）自动关闭常驻窗口；0 = 不自动关。默认 10。
+    pub fn get_browser_idle_close_min(&self) -> Result<u64, String> {
+        Ok(self
+            .get_raw("browser_idle_close_min")?
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(10))
+    }
+
+    pub fn set_browser_idle_close_min(&self, min: u64) -> Result<(), String> {
+        self.set_raw("browser_idle_close_min", &min.to_string())
+    }
+
     /// SessionPage 是否默认显示任务面板（默认开，保持既有界面行为）。
     pub fn get_session_task_panel_default_visible(&self) -> Result<bool, String> {
         self.get_bool("session_task_panel_default_visible", true)
@@ -206,6 +262,36 @@ impl AppSettingsStore {
         self.set_raw("max_iterations", &n.to_string())
     }
 
+    /// 单工具执行超时全局默认（秒，缺省 30，clamp 1..=1800）。
+    /// 工具级 `Tool::timeout_secs()` 覆盖优先于此值。
+    pub fn get_tool_timeout_secs(&self) -> Result<u64, String> {
+        let n = self
+            .get_raw("tool_timeout_secs")?
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_TOOL_TIMEOUT_SECS);
+        Ok(n.clamp(TOOL_TIMEOUT_MIN, TOOL_TIMEOUT_MAX))
+    }
+
+    pub fn set_tool_timeout_secs(&self, n: u64) -> Result<(), String> {
+        let n = n.clamp(TOOL_TIMEOUT_MIN, TOOL_TIMEOUT_MAX);
+        self.set_raw("tool_timeout_secs", &n.to_string())
+    }
+
+    /// 工具并行执行上限（连续 concurrency_safe 段一次最多并发数，缺省 8，clamp 1..=32）。
+    /// 1 = 退化为串行。
+    pub fn get_tool_parallelism(&self) -> Result<u64, String> {
+        let n = self
+            .get_raw("tool_parallelism")?
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_TOOL_PARALLELISM);
+        Ok(n.clamp(TOOL_PARALLELISM_MIN, TOOL_PARALLELISM_MAX))
+    }
+
+    pub fn set_tool_parallelism(&self, n: u64) -> Result<(), String> {
+        let n = n.clamp(TOOL_PARALLELISM_MIN, TOOL_PARALLELISM_MAX);
+        self.set_raw("tool_parallelism", &n.to_string())
+    }
+
     /// 读辅助模型 id（用于标题/建议生成）。None = 跟随会话模型。
     pub fn get_aux_model_id(&self) -> Result<Option<String>, String> {
         Ok(self
@@ -221,30 +307,22 @@ impl AppSettingsStore {
         }
     }
 
-    /// 读 Agent 身份（人设）；未设置或纯空白返回 None（→ system_prompt 回退默认人设句）。
-    pub fn get_agent_identity(&self) -> Result<Option<String>, String> {
-        Ok(self.get_raw("agent_identity")?.filter(|s| !s.trim().is_empty()))
+    /// 知识库向量检索全局开关（默认关）。
+    pub fn get_knowledge_vector_enabled(&self) -> Result<bool, String> {
+        self.get_bool("knowledge_vector_enabled", false)
     }
 
-    /// 写 Agent 身份；None/空白 = 清除（回退默认人设句）。
-    pub fn set_agent_identity(&self, value: Option<&str>) -> Result<(), String> {
-        match value.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(v) => self.set_raw("agent_identity", v),
-            None => self.delete_raw("agent_identity"),
-        }
+    pub fn set_knowledge_vector_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.set_bool("knowledge_vector_enabled", enabled)
     }
 
-    /// 读 Agent 灵魂（性格/价值观/语气）；未设置或纯空白返回 None。
-    pub fn get_agent_soul(&self) -> Result<Option<String>, String> {
-        Ok(self.get_raw("agent_soul")?.filter(|s| !s.trim().is_empty()))
+    /// 知识库向量检索所用 embedding 模型 id（空 = 未选）。
+    pub fn get_knowledge_embedding_model(&self) -> Result<String, String> {
+        self.get_str("knowledge_embedding_model")
     }
 
-    /// 写 Agent 灵魂；None/空白 = 清除。
-    pub fn set_agent_soul(&self, value: Option<&str>) -> Result<(), String> {
-        match value.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(v) => self.set_raw("agent_soul", v),
-            None => self.delete_raw("agent_soul"),
-        }
+    pub fn set_knowledge_embedding_model(&self, model_id: &str) -> Result<(), String> {
+        self.set_str("knowledge_embedding_model", model_id)
     }
 
     /// 子代理执行方式：parallel（同轮并行启动）| serial（同父会话按创建顺序逐个启动）。
@@ -346,6 +424,16 @@ mod tests {
     }
 
     #[test]
+    fn computer_use_enabled_defaults_off_then_round_trips() {
+        let s = temp_store();
+        assert!(!s.get_computer_use_enabled().unwrap(), "缺省应为关");
+        s.set_computer_use_enabled(true).unwrap();
+        assert!(s.get_computer_use_enabled().unwrap());
+        s.set_computer_use_enabled(false).unwrap();
+        assert!(!s.get_computer_use_enabled().unwrap());
+    }
+
+    #[test]
     fn session_task_panel_default_visible_defaults_on_then_round_trips() {
         let s = temp_store();
         assert!(
@@ -391,28 +479,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_persona_round_trip_and_clear() {
+    fn browser_idle_close_min_defaults_10_then_round_trips() {
         let s = temp_store();
-        // 缺省均为 None
-        assert_eq!(s.get_agent_identity().unwrap(), None);
-        assert_eq!(s.get_agent_soul().unwrap(), None);
-        // 往返
-        s.set_agent_identity(Some("你是小硅，一名严谨的研究助手")).unwrap();
-        s.set_agent_soul(Some("耐心、克制、先问后做")).unwrap();
-        assert_eq!(
-            s.get_agent_identity().unwrap(),
-            Some("你是小硅，一名严谨的研究助手".to_string())
-        );
-        assert_eq!(
-            s.get_agent_soul().unwrap(),
-            Some("耐心、克制、先问后做".to_string())
-        );
-        // 纯空白等同清除 → 读回 None
-        s.set_agent_identity(Some("   ")).unwrap();
-        assert_eq!(s.get_agent_identity().unwrap(), None);
-        // None 清除
-        s.set_agent_soul(None).unwrap();
-        assert_eq!(s.get_agent_soul().unwrap(), None);
+        assert_eq!(s.get_browser_idle_close_min().unwrap(), 10, "缺省应为 10 分钟");
+        s.set_browser_idle_close_min(0).unwrap();
+        assert_eq!(s.get_browser_idle_close_min().unwrap(), 0, "0 = 不自动关");
+        s.set_browser_idle_close_min(30).unwrap();
+        assert_eq!(s.get_browser_idle_close_min().unwrap(), 30);
     }
 
     #[test]
@@ -424,5 +497,29 @@ mod tests {
         s.set_subagent_execution_mode("parallel").unwrap();
         assert_eq!(s.get_subagent_execution_mode().unwrap(), "parallel");
         assert!(s.set_subagent_execution_mode("batched").is_err());
+    }
+
+    #[test]
+    fn tool_timeout_secs_default_and_clamp() {
+        let s = temp_store();
+        assert_eq!(s.get_tool_timeout_secs().unwrap(), DEFAULT_TOOL_TIMEOUT_SECS);
+        s.set_tool_timeout_secs(5).unwrap();
+        assert_eq!(s.get_tool_timeout_secs().unwrap(), 5);
+        s.set_tool_timeout_secs(0).unwrap(); // 低于 min → clamp 到 TOOL_TIMEOUT_MIN
+        assert_eq!(s.get_tool_timeout_secs().unwrap(), TOOL_TIMEOUT_MIN);
+        s.set_tool_timeout_secs(99999).unwrap(); // 高于 max → clamp 到 TOOL_TIMEOUT_MAX
+        assert_eq!(s.get_tool_timeout_secs().unwrap(), TOOL_TIMEOUT_MAX);
+    }
+
+    #[test]
+    fn tool_parallelism_default_and_clamp() {
+        let s = temp_store();
+        assert_eq!(s.get_tool_parallelism().unwrap(), DEFAULT_TOOL_PARALLELISM);
+        s.set_tool_parallelism(4).unwrap();
+        assert_eq!(s.get_tool_parallelism().unwrap(), 4);
+        s.set_tool_parallelism(0).unwrap(); // < min → clamp 到 1
+        assert_eq!(s.get_tool_parallelism().unwrap(), TOOL_PARALLELISM_MIN);
+        s.set_tool_parallelism(9999).unwrap(); // > max → clamp 到 32
+        assert_eq!(s.get_tool_parallelism().unwrap(), TOOL_PARALLELISM_MAX);
     }
 }

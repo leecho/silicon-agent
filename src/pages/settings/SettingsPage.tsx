@@ -3,10 +3,13 @@ import { WindowDragRegion } from "../../components/layout/WindowDragRegion";
 import { getSettingsTab, settingsTabs, type SettingsTabId } from "./settingsTabs";
 import { ProviderSection } from "./sections/ProviderSection";
 import { PreferencesSection } from "./sections/PreferencesSection";
-import { PersonaSection } from "./sections/PersonaSection";
-import { AdvanceConfigSection } from "./sections/AdvanceConfigSection";
+import { PermissionsSection } from "./sections/PermissionsSection";
+import { AutomationSection } from "./sections/AutomationSection";
+import { RuntimeBehaviorSection } from "./sections/RuntimeBehaviorSection";
 import { UsageAnalysisSection } from "./sections/UsageAnalysisSection";
 import { CallLogSection } from "./sections/CallLogSection";
+import { MemorySection } from "./sections/MemorySection";
+import { KnowledgeBaseSection } from "./sections/KnowledgeBaseSection";
 import { joinClasses } from "../../components/ui/utils";
 
 /**
@@ -36,11 +39,11 @@ export function SettingsPage({
 
   return (
     <main className="app-theme grid h-screen grid-cols-[280px_minmax(0,1fr)] bg-background text-foreground">
+      <WindowDragRegion className="h-4 w-full"/>
       <nav
-        className="relative flex min-h-0 flex-col gap-0.5 overflow-auto border-r border-border-subtle bg-card px-3 py-5"
+        className="relative flex min-h-0 flex-col gap-0.5 overflow-auto border-r border-border-subtle px-3 pt-7"
         aria-label="设置导航"
       >
-        <WindowDragRegion className="h-4 w-full"/>
         <button
           type="button"
           onClick={onBack}
@@ -77,14 +80,16 @@ export function SettingsPage({
         })}
       </nav>
 
-      <div className="relative flex min-h-0 flex-col overflow-auto bg-background px-10 py-8">
+      <div className="relative flex min-h-0 flex-col overflow-auto bg-background p-6">
         <WindowDragRegion className="h-4" />
-        <div className="mx-auto w-full max-w-3xl">
+        <div className="mx-auto w-full max-w-[860px]">
           <div className="mb-8">
             <h1 className="text-lg font-semibold text-foreground">{activeItem.label}</h1>
             <p className="mt-1 text-sm text-foreground-muted">{activeItem.description}</p>
           </div>
-          {activeTab === "model-advance" && <AdvanceConfigSection />}
+          {activeTab === "model-advance" && <RuntimeBehaviorSection />}
+          {activeTab === "permissions" && <PermissionsSection />}
+          {activeTab === "automation" && <AutomationSection />}
           {activeTab === "model-provider" && (
             <ProviderSection
               providerId={providerId}
@@ -96,7 +101,8 @@ export function SettingsPage({
           {activeTab === "usage-analysis" && <UsageAnalysisSection />}
           {activeTab === "call-log" && <CallLogSection />}
           {activeTab === "preferences" && <PreferencesSection />}
-          {activeTab === "agent-persona" && <PersonaSection />}
+          {activeTab === "memory" && <MemorySection />}
+          {activeTab === "knowledge-base" && <KnowledgeBaseSection />}
         </div>
       </div>
     </main>

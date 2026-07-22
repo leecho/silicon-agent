@@ -1,21 +1,17 @@
 //! ProviderGateway：模型调用网关。持有 `Arc<ProviderStore>`，`impl ModelClient` 实现
-//! OpenAI-compatible 同步/流式补全。
+//! 同步/流式补全。网关本身协议无关：据 `CallTarget.protocol` 选对应 `ProtocolAdapter`
+//! （OpenAI / Anthropic）来构造请求体、设鉴权头、归一化响应与解析 SSE 流。
 //!
-//! 与持久化（`store`）正交：从 store 解析 call_target、经 `adapter` 构造请求体/解析流、
-//! 经 `call` 归一化响应。网关本身不持有 db，只是 store 之上的「调用行为」薄包装。
+//! 与持久化（`store`）正交：从 store 解析 call_target，再委托所选 adapter 完成请求构造、
+//! 响应归一化与流解析。网关本身不持有 db，只是 store 之上的「调用行为」薄包装。
 //!
 //! 调用观察：通过依赖倒置的 `ModelCallObserver` 钩子，把每次调用（请求/响应/耗时）交给
 //! 观察者（如 call_log 的 CallLogObserver）。provider 层只认这个 trait，不反向依赖 call_log。
 
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::sync::Arc;
 
-use super::adapter::{
-    authorization_header_value, build_chat_completion_body, chat_completions_endpoint,
-    emit_stream_line_delta, provider_call_error, stream_read_timeout_ms, timed_agent,
-    ToolCallStreamAcc,
-};
-use super::call::{normalize_chat_completion_response, normalize_chat_completion_stream_lines};
+use super::protocol::adapter_for;
 use super::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ModelSelection, ProviderCallError,
 };
@@ -99,52 +95,127 @@ impl ProviderGateway {
         &self,
         request: &ModelCallRequest,
     ) -> Result<ModelCallResult, ProviderCallError> {
-        let (base_url, api_key, model) = self.store.call_target(request)?;
-        let endpoint = chat_completions_endpoint(&base_url);
-        let body = build_chat_completion_body(&model, request, false);
-        let agent = timed_agent(request.timeout_ms.unwrap_or(120_000));
-        let response: serde_json::Value = agent
-            .post(&endpoint)
-            .set("Authorization", &authorization_header_value(&api_key))
-            .set("Content-Type", "application/json")
-            .send_json(body)
-            .map_err(|err| provider_call_error("provider call failed", err))?
-            .into_json()
-            .map_err(|err| {
-                ProviderCallError::new(format!("provider response is not valid JSON: {err}"))
-            })?;
-        normalize_chat_completion_response(response)
+        let target = self.store.call_target(request)?;
+        let adapter = adapter_for(target.protocol);
+        let endpoint = adapter.endpoint(&target.base_url);
+        let body = adapter.build_body(&target.model, request, false);
+        let http_req = crate::http::HttpRequest::post(endpoint)
+            .headers(adapter.auth_headers(&target.api_key))
+            .json_body(&body)
+            .map_err(super::adapter::http_error_to_provider)?
+            .timeout(std::time::Duration::from_millis(
+                request.timeout_ms.unwrap_or(120_000),
+            ));
+        let resp = crate::http::HttpClient::new()
+            .send(http_req)
+            .map_err(super::adapter::http_error_to_provider)?;
+        if !resp.is_success() {
+            return Err(super::adapter::http_error_to_provider(
+                crate::http::HttpError::Status {
+                    code: resp.status,
+                    body: resp.text(),
+                },
+            ));
+        }
+        let response: serde_json::Value = resp.json().map_err(|err| {
+            ProviderCallError::new(format!("provider response is not valid JSON: {err:?}"))
+        })?;
+        adapter.normalize_response(response)
     }
 
     /// stream_model_with_events 的实际 SSE 部分（不含观察钩子）。
     fn stream_model_inner(
         &self,
         request: &ModelCallRequest,
+        cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
-        let (base_url, api_key, model) = self.store.call_target(request)?;
-        let endpoint = chat_completions_endpoint(&base_url);
-        let body = build_chat_completion_body(&model, request, true);
-        let agent = timed_agent(stream_read_timeout_ms(request.timeout_ms));
-        let response = agent
-            .post(&endpoint)
-            .set("Authorization", &authorization_header_value(&api_key))
-            .set("Content-Type", "application/json")
-            .send_json(body)
-            .map_err(|err| provider_call_error("provider stream failed", err))?;
-        let reader = BufReader::new(response.into_reader());
-        let mut lines = Vec::new();
-        let mut tool_acc = ToolCallStreamAcc::default();
-        for line in reader.lines() {
-            let line = line.map_err(|err| {
-                ProviderCallError::transient(format!("provider stream read failed: {err}"))
-            })?;
-            if !emit_stream_line_delta(&line, &mut tool_acc, on_event)? {
-                return Err(ProviderCallError::new("model stream cancelled"));
-            }
-            lines.push(line);
+        let target = self.store.call_target(request)?;
+        let adapter = adapter_for(target.protocol);
+        let endpoint = adapter.endpoint(&target.base_url);
+        let body = adapter.build_body(&target.model, request, true);
+        // 统一 HTTP：reqwest async 读响应头（宽超时保慢首字节，不再误判瞬时→重试风暴）+
+        // 正文经 CancellableReader 供给；取消靠 abort（连接 drop）即时生效、与读超时解耦。
+        // parse_stream / read_sse_lines 复用不改（CancellableReader 返回 WouldBlock 供其查 cancel）。
+        let http_req = crate::http::HttpRequest::post(endpoint)
+            .headers(adapter.auth_headers(&target.api_key))
+            .json_body(&body)
+            .map_err(super::adapter::http_error_to_provider)?;
+        let reader = crate::http::HttpClient::new()
+            .stream_body(http_req)
+            .map_err(super::adapter::http_error_to_provider)?;
+        let mut reader = BufReader::new(reader);
+        adapter.parse_stream(&mut reader, cancel, on_event)
+    }
+
+    /// 调 embedding 模型把多段文本转向量（OpenAI-compatible /embeddings）。
+    /// 复用与对话相同的目标解析（call_target → base_url/api_key/model）。
+    pub fn embed_texts(&self, model_id: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
         }
-        normalize_chat_completion_stream_lines(lines)
+        // 先用 resolve_selection 拿到 ModelSelection，再构造最小 ModelCallRequest 调 call_target
+        let resolved = self
+            .store
+            .resolve_selection(Some(model_id))
+            .map_err(|e| format!("解析 embedding 模型失败：{e}"))?;
+        let request = super::client::ModelCallRequest {
+            model_selection: Some(resolved.selection()),
+            ..Default::default()
+        };
+        let target = self
+            .store
+            .call_target(&request)
+            .map_err(|e| format!("获取 embedding 目标失败：{}", e.message))?;
+
+        // Anthropic 等无 OpenAI-compatible /embeddings 端点的协议直接拒绝，给可读提示。
+        if matches!(target.protocol, super::protocol::Protocol::Anthropic) {
+            return Err(
+                "所选 embedding 模型的厂商不支持 /embeddings 接口，请改用 OpenAI 兼容的 embedding 模型"
+                    .into(),
+            );
+        }
+
+        let base = target.base_url.trim_end_matches('/');
+        let endpoint = format!("{base}/embeddings");
+        let body = serde_json::json!({ "model": target.model, "input": texts });
+        let mut req = crate::http::HttpRequest::post(endpoint)
+            .json_body(&body)
+            .map_err(|e| format!("embedding 请求构造失败：{e:?}"))?
+            .timeout(std::time::Duration::from_secs(60));
+        // 复用全仓鉴权 helper（trim api_key 防止前后空白导致鉴权失败）。
+        if !target.api_key.trim().is_empty() {
+            req = req.header(
+                "Authorization",
+                super::adapter::authorization_header_value(&target.api_key),
+            );
+        }
+        let http_resp = crate::http::HttpClient::new()
+            .send(req)
+            .map_err(|e| format!("embedding 调用失败：{e:?}"))?;
+        if !http_resp.is_success() {
+            return Err(format!("embedding 调用失败：HTTP {}", http_resp.status));
+        }
+        let resp: serde_json::Value = http_resp
+            .json()
+            .map_err(|e| format!("embedding 响应非法 JSON：{e:?}"))?;
+        let data = resp
+            .get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| "embedding 响应缺 data 字段".to_string())?;
+        let mut out = Vec::with_capacity(data.len());
+        for item in data {
+            let arr = item
+                .get("embedding")
+                .and_then(|e| e.as_array())
+                .ok_or_else(|| "embedding 响应项缺 embedding 字段".to_string())?;
+            out.push(
+                arr.iter()
+                    .filter_map(|v| v.as_f64().map(|f| f as f32))
+                    .collect::<Vec<f32>>(),
+            );
+        }
+        Ok(out)
     }
 
     /// 若开启观察则组装 observation 并交给观察者（best-effort，不影响调用结果）。
@@ -203,17 +274,20 @@ impl ModelClient for ProviderGateway {
         &self,
         request: ModelCallRequest,
     ) -> Result<ModelCallResult, ProviderCallError> {
-        self.stream_model_with_events(request, &mut |_| true)
+        // 无 cancel 的探测路径（如 fallback 试探）：传一个永不置位的标记。
+        let never = std::sync::atomic::AtomicBool::new(false);
+        self.stream_model_with_events(request, &never, &mut |_| true)
     }
 
     fn stream_model_with_events(
         &self,
         request: ModelCallRequest,
+        cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let observe = self.observer.as_ref().is_some_and(|o| o.enabled());
         let started = std::time::Instant::now();
-        let outcome = self.stream_model_inner(&request, on_event);
+        let outcome = self.stream_model_inner(&request, cancel, on_event);
         if observe {
             self.observe(&request, &outcome, started.elapsed().as_millis() as u64);
         }

@@ -45,6 +45,10 @@ impl Tool for WebSearch {
         "web_search"
     }
 
+    fn disclosure(&self) -> crate::tools::Disclosure {
+        crate::tools::Disclosure::Deferred
+    }
+
     fn label(&self) -> &str {
         "搜索网页"
     }
@@ -87,26 +91,20 @@ impl Tool for WebSearch {
             .unwrap_or(5);
 
         let url = format!("{SEARCH_ENDPOINT}?q={}", percent_encode(query));
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(15))
-            .build();
-        let body = match agent
-            .get(&url)
-            .set("User-Agent", BROWSER_UA)
-            .set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .call()
-        {
-            Ok(resp) => resp
-                .into_string()
-                .map_err(|e| format!("搜索失败: 读取响应出错: {e}"))?,
-            // HTTP 4xx/5xx（含反爬 429/403 等）：搜索服务不可用，明确告知模型别空转。
-            Err(ureq::Error::Status(code, _)) => {
-                return Err(search_unavailable(&format!("HTTP {code}")));
-            }
-            // 传输层失败（TLS/连接/超时）：同样明确告知不可用。
-            Err(err) => return Err(search_unavailable(&err.to_string())),
-        };
+        let resp = crate::http::HttpClient::new()
+            .send(
+                crate::http::HttpRequest::get(url)
+                    .header("User-Agent", BROWSER_UA)
+                    .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                    .timeout(Duration::from_secs(15)),
+            )
+            // 传输层失败（TLS/连接/超时）：明确告知不可用。
+            .map_err(|e| search_unavailable(&e.to_string()))?;
+        // HTTP 4xx/5xx（含反爬 429/403 等）：搜索服务不可用，明确告知模型别空转。
+        if !resp.is_success() {
+            return Err(search_unavailable(&format!("HTTP {}", resp.status)));
+        }
+        let body = resp.text();
 
         let hits = parse_bing_results(&body, max_results);
         if hits.is_empty() {

@@ -1,5 +1,5 @@
 //! 远程 connector 的 HTTP 边界：抽成 trait 以便单测 mock，不打真实网络。
-//! 真实实现用 ureq（与 provider 一致，同步阻塞）。
+//! 真实实现用统一 HttpClient（与全仓一致，同步门面）。
 
 /// 最小 HTTP 客户端：POST/GET JSON，返回响应体字符串。
 pub trait HttpClient: Send + Sync {
@@ -7,7 +7,7 @@ pub trait HttpClient: Send + Sync {
     fn get_json(&self, url: &str, headers: &[(&str, &str)]) -> Result<String, String>;
 }
 
-/// ureq 实现。连接超时 10s，读超时按长轮询放宽。
+/// 统一 HttpClient 实现。读超时按长轮询放宽（构造时传入）。
 pub struct UreqHttp {
     read_timeout_ms: u64,
 }
@@ -20,45 +20,41 @@ impl UreqHttp {
 
 impl HttpClient for UreqHttp {
     fn post_json(&self, url: &str, body: &str, headers: &[(&str, &str)]) -> Result<String, String> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_secs(10))
-            .timeout_read(std::time::Duration::from_millis(self.read_timeout_ms))
-            .build();
-        let mut req = agent.post(url).set("Content-Type", "application/json");
-        for (k, v) in headers {
-            req = req.set(k, v);
+        let hdrs = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let resp = crate::http::HttpClient::new()
+            .send(
+                crate::http::HttpRequest::post(url)
+                    .content_type("application/json")
+                    .headers(hdrs)
+                    .string_body(body)
+                    .timeout(std::time::Duration::from_millis(self.read_timeout_ms)),
+            )
+            .map_err(|e| format!("remote http error: {e}"))?;
+        if !resp.is_success() {
+            return Err(format!("remote http {}: {}", resp.status, resp.text()));
         }
-        match req.send_string(body) {
-            Ok(resp) => resp
-                .into_string()
-                .map_err(|e| format!("read remote response: {e}")),
-            Err(ureq::Error::Status(code, resp)) => {
-                let detail = resp.into_string().unwrap_or_default();
-                Err(format!("remote http {code}: {detail}"))
-            }
-            Err(e) => Err(format!("remote http error: {e}")),
-        }
+        Ok(resp.text())
     }
 
     fn get_json(&self, url: &str, headers: &[(&str, &str)]) -> Result<String, String> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_secs(10))
-            .timeout_read(std::time::Duration::from_millis(self.read_timeout_ms))
-            .build();
-        let mut req = agent.get(url);
-        for (k, v) in headers {
-            req = req.set(k, v);
+        let hdrs = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let resp = crate::http::HttpClient::new()
+            .send(
+                crate::http::HttpRequest::get(url)
+                    .headers(hdrs)
+                    .timeout(std::time::Duration::from_millis(self.read_timeout_ms)),
+            )
+            .map_err(|e| format!("remote http error: {e}"))?;
+        if !resp.is_success() {
+            return Err(format!("remote http {}: {}", resp.status, resp.text()));
         }
-        match req.call() {
-            Ok(resp) => resp
-                .into_string()
-                .map_err(|e| format!("read remote response: {e}")),
-            Err(ureq::Error::Status(code, resp)) => {
-                let detail = resp.into_string().unwrap_or_default();
-                Err(format!("remote http {code}: {detail}"))
-            }
-            Err(e) => Err(format!("remote http error: {e}")),
-        }
+        Ok(resp.text())
     }
 }
 

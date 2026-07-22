@@ -21,6 +21,10 @@ impl Tool for InstallSkill {
         "install_skill"
     }
 
+    fn disclosure(&self) -> crate::tools::Disclosure {
+        crate::tools::Disclosure::Deferred
+    }
+
     fn label(&self) -> &str {
         "登记技能"
     }

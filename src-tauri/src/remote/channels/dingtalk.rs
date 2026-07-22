@@ -71,7 +71,7 @@ impl DingTalk {
         let body = serde_json::json!({
             "clientId": self.app_key,
             "clientSecret": self.app_secret,
-            "ua": "silicon-agent-sdk-rust/0.1",
+            "ua": "silicon-worker-sdk-rust/0.1",
             "subscriptions": [
                 { "type": "CALLBACK", "topic": BOT_TOPIC }
             ]

@@ -12,6 +12,12 @@ pub fn stop_session(services: State<'_, AppState>, session_id: String) -> Result
     Ok(())
 }
 
+/// 取消单个子代理（child）：停其运行并把「已取消」结果回填父，父在该批全部回填后续跑。
+#[tauri::command]
+pub fn cancel_child(services: State<'_, AppState>, child_id: String) -> Result<(), String> {
+    services.coordinator.cancel_child_run(&child_id)
+}
+
 /// 置顶 / 取消置顶某会话。
 #[tauri::command]
 pub fn set_session_pinned(

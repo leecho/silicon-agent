@@ -7,7 +7,7 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
 }
 
 const config = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
-const mainWindow = config.app.windows.find((window: { title?: string }) => window.title === "SiliconAgent");
+const mainWindow = config.app.windows.find((window: { title?: string }) => window.title === "SiliconWorker");
 
 if (!mainWindow) {
   throw new Error("main window config not found");

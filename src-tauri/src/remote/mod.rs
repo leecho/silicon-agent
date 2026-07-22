@@ -412,10 +412,12 @@ pub struct AppStateEngine {
 impl RemoteEngine for AppStateEngine {
     fn drive_message(&self, session_id: &str, text: &str) -> Result<(), String> {
         use tauri::Manager;
+        // 远程驱动不做乐观 UI 对账，丢弃入队/起跑布尔返回。
         self.app
             .state::<crate::app_state::AppState>()
             .coordinator
             .spawn_user_message_with_origin(session_id, text, crate::app_state::RunOrigin::Remote)
+            .map(|_| ())
     }
     fn drive_permission(
         &self,

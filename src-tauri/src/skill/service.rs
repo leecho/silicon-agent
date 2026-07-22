@@ -95,8 +95,7 @@ impl SkillService {
         }
 
         // 清理孤儿：仅清**散装** skill（plugin_id 与 team_id 均 None）中磁盘已无对应 name 的行。
-        // plugin_id 为历史遗留的来源列（插件子系统已移除，现恒为 None）；team 私有 skill（team_id=Some）
-        // 导入后常驻、不参与本扫描。
+        // 插件内 skill 由 PluginService 管理；team 私有 skill（team_id=Some）导入后常驻、不参与本扫描。
         for rec in store::list(&self.db)? {
             if rec.plugin_id.is_none() && rec.team_id.is_none() && !seen.contains(&rec.name) {
                 store::delete(&self.db, &rec.id)?;
@@ -115,12 +114,39 @@ impl SkillService {
             .collect())
     }
 
-    /// 列出**全局**启用技能（散装 + plugin 提供，即 team_id=''；供引擎注入 system prompt）。
-    pub fn list_enabled(&self) -> Result<Vec<SkillSummary>, String> {
-        Ok(store::list_enabled(&self.db)?
+    /// `plugin_id → plugin name` 映射。**现算不冗余**：plugin 改名即刻反映，不会漂移。
+    fn plugin_names(&self) -> std::collections::HashMap<String, String> {
+        crate::plugin::store::list(&self.db)
+            .unwrap_or_default()
             .into_iter()
-            .map(Into::into)
-            .collect())
+            .map(|p| (p.id, p.name))
+            .collect()
+    }
+
+    /// 给 plugin 提供的公开技能填上**限定名**（`plugin_name:name`，T108 §6）。
+    ///
+    /// 散装技能与私有技能不加前缀：前者本就是用户自己的东西，后者不进全局池、作用域内唯一。
+    fn fill_qualified(&self, mut list: Vec<SkillSummary>) -> Vec<SkillSummary> {
+        let names = self.plugin_names();
+        for s in &mut list {
+            if let Some(pid) = s.plugin_id.as_deref().filter(|p| !p.is_empty()) {
+                if let Some(pname) = names.get(pid) {
+                    s.qualified_name = Some(crate::plugin::namespace::qualify(pname, &s.name));
+                }
+            }
+        }
+        list
+    }
+
+    /// 列出**全局**启用技能（散装 + plugin 提供，即 team_id=''；供引擎注入 system prompt）。
+    /// plugin 提供的带**限定名**（`plugin:name`）——否则同名技能在用户面与模型面都无从消歧。
+    pub fn list_enabled(&self) -> Result<Vec<SkillSummary>, String> {
+        Ok(self.fill_qualified(
+            store::list_enabled(&self.db)?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        ))
     }
 
     /// 列出某 team 的私有可见技能（供引擎在选中该 team 时追加入池）。
@@ -206,11 +232,27 @@ impl SkillService {
 
     /// 按 name 读取技能正文（去 frontmatter）；不存在返回 None。供引擎 load_skill 使用。
     /// 解析顺序：散装 skill 优先，其次任意启用的插件内同名 skill（含隐藏的内部知识库 skill）。
+    /// 按名定位技能行，**认限定名**（`plugin:name`）也认裸名。
+    ///
+    /// system prompt 里 plugin 技能列的是限定名，模型会照着调 `load_skill("figma:get-file")`。
+    /// 解析器若只认裸名，plugin 技能就全废了 —— 呈现与解析必须同口径。
+    fn resolve_record(&self, name: &str) -> Result<Option<SkillRecord>, String> {
+        if let (Some(plugin_name), bare) = crate::plugin::namespace::split_qualified(name) {
+            if let Some(p) = crate::plugin::store::get_by_name(&self.db, plugin_name)? {
+                if let Some(r) = store::get_by_plugin_and_name(&self.db, &p.id, bare)? {
+                    return Ok(Some(r));
+                }
+            }
+            // 前缀没对上任何 plugin：可能技能名本身含冒号，退回按整串裸名找。
+        }
+        match store::get_by_name(&self.db, name)? {
+            Some(r) => Ok(Some(r)),
+            None => store::get_enabled_by_name_any(&self.db, name),
+        }
+    }
+
     pub fn load_body(&self, name: &str) -> Result<Option<String>, String> {
-        let rec = match store::get_by_name(&self.db, name)? {
-            Some(r) => Some(r),
-            None => store::get_enabled_by_name_any(&self.db, name)?,
-        };
+        let rec = self.resolve_record(name)?;
         let Some(rec) = rec else {
             return Ok(None);
         };
@@ -418,6 +460,35 @@ impl SkillService {
             .ok_or_else(|| "安装后读取索引失败".into())
     }
 
+    /// 把一个物化技能装成**全局散装技能**（owner 三列皆空）。按 name 幂等（重装覆盖同名全局技能）。
+    /// 文件写到 `{root}/<name>/`，再索引（mirror sync 的全局记录形状）。
+    pub fn install_global(&self, mat: &crate::market::MaterializedSkill) -> Result<(), String> {
+        // 不可信的远端 SKILL.md frontmatter `name` 会成为磁盘目录名：拒绝路径穿越。
+        if !crate::market::wire::is_safe_component(&mat.name) {
+            return Err(format!("非法技能名（疑路径穿越）：{}", mat.name));
+        }
+        let skill_dir = self.root.join(&mat.name);
+        crate::expert::service::write_skill_files(&skill_dir, &mat.files)?;
+        let now = Self::now();
+        let rec = SkillRecord {
+            id: new_id("skill"),
+            source: SkillSource::User,
+            name: mat.name.clone(),
+            description: mat.description.clone(),
+            dir_name: skill_dir.to_string_lossy().into_owned(),
+            enabled: true,
+            installed_at: now.clone(),
+            updated_at: now,
+            plugin_id: None,
+            team_id: None,
+            expert_id: None,
+            user_invocable: mat.user_invocable,
+            argument_hint: mat.argument_hint.clone(),
+            group_id: None,
+        };
+        store::upsert(&self.db, &rec)
+    }
+
     /// 技能详情：元数据 + SKILL.md 原文 + 目录全部文件列表（递归，按路径排序）。
     pub fn detail(&self, id: &str) -> Result<SkillDetail, String> {
         let rec = self.record(id)?;
@@ -481,7 +552,7 @@ impl SkillService {
 
 /// 定位 skill 根：根目录直接含 SKILL.md，或恰有唯一顶层子目录且其含 SKILL.md（兼容 zip 多一层）。
 /// 替换技能正文里的模板占位符：
-/// - `{{.DataDirName}}` → 数据目录名（`.siliconagent`），内置 skill 用它指代数据目录；
+/// - `{{.DataDirName}}` → 数据目录名（`.siliconworker`），内置 skill 用它指代数据目录；
 /// - `{{.SkillDir}}` → 该技能在本机的绝对目录，捆绑脚本类技能用它位置无关地引用自带脚本
 ///   （如 `node {{.SkillDir}}/scripts/index.js`）。加载时落为真实路径，模型可直接据此执行。
 fn substitute_vars(body: &str, skill_dir: &std::path::Path) -> String {
@@ -843,5 +914,117 @@ mod reference_tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&pkg);
+    }
+}
+
+#[cfg(test)]
+mod install_global_tests {
+    use super::SkillService;
+    use crate::market::MaterializedSkill;
+    use crate::skill::store;
+    use crate::storage::AppDatabase;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d =
+            std::env::temp_dir().join(format!("siw-skglob-{}-{}-{}", tag, std::process::id(), n));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn mat(name: &str) -> MaterializedSkill {
+        MaterializedSkill {
+            name: name.into(),
+            description: "全局技能描述".into(),
+            user_invocable: true,
+            argument_hint: None,
+            files: vec![(
+                "SKILL.md".into(),
+                format!("---\nname: {name}\ndescription: 全局技能描述\n---\n正文\n").into_bytes(),
+            )],
+        }
+    }
+
+    fn service(root: &std::path::Path) -> (SkillService, Arc<AppDatabase>) {
+        let db = Arc::new(AppDatabase::open(root.join("t.db")).unwrap());
+        (SkillService::new(db.clone(), root.join("skills")), db)
+    }
+
+    #[test]
+    fn install_global_lands_owner_empty() {
+        let root = tmp("owner");
+        let (svc, db) = service(&root);
+        svc.install_global(&mat("g1")).expect("install");
+        let rows = store::list(&db).expect("list");
+        let row = rows.iter().find(|r| r.name == "g1").expect("row");
+        assert!(row.plugin_id.is_none());
+        assert!(row.team_id.is_none());
+        assert!(row.expert_id.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_global_writes_skill_md_and_is_findable() {
+        let root = tmp("write");
+        let (svc, _db) = service(&root);
+        svc.install_global(&mat("g2")).expect("install");
+        let md = root.join("skills").join("g2").join("SKILL.md");
+        assert!(md.is_file(), "SKILL.md 应落盘");
+        let body = std::fs::read_to_string(&md).unwrap();
+        assert!(body.contains("name: g2"));
+        // 可见：list / list_enabled 均含。
+        assert!(svc.list().unwrap().iter().any(|s| s.name == "g2"));
+        assert!(svc.list_enabled().unwrap().iter().any(|s| s.name == "g2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_global_idempotent_by_name() {
+        let root = tmp("idem");
+        let (svc, db) = service(&root);
+        svc.install_global(&mat("g3")).expect("install 1");
+        svc.install_global(&mat("g3")).expect("install 2");
+        let count = store::list(&db)
+            .unwrap()
+            .into_iter()
+            .filter(|r| {
+                r.name == "g3"
+                    && r.plugin_id.is_none()
+                    && r.team_id.is_none()
+                    && r.expert_id.is_none()
+            })
+            .count();
+        assert_eq!(count, 1, "重复安装同名全局技能应只有一行");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_global_rejects_traversal_name() {
+        let root = tmp("traversal");
+        let (svc, db) = service(&root);
+        // 恶意远端 SKILL.md：frontmatter name 试图逃出 skills 根写到兄弟目录。
+        let evil = MaterializedSkill {
+            name: "../evil".into(),
+            description: "x".into(),
+            user_invocable: true,
+            argument_hint: None,
+            files: vec![("SKILL.md".into(), b"---\nname: e\n---\nbody\n".to_vec())],
+        };
+        // 穿越目标：{root}/skills 的兄弟目录 {root}/evil。
+        let traversal_target = root.join("evil");
+        assert!(svc.install_global(&evil).is_err(), "穿越 name 应被拒绝");
+        assert!(
+            !traversal_target.exists(),
+            "不得在 skills 根之外创建目录：{}",
+            traversal_target.display()
+        );
+        // 索引中也不应落任何行。
+        assert!(store::list(&db).unwrap().is_empty(), "拒绝安装不应写索引");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

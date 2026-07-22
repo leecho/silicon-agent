@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use silicon_agent::tools::{
+use silicon_worker::tools::{
     command_tool::CommandExecute,
+    fs_search::{Glob, Grep},
     fs_tools::{EditFile, WriteFile},
     registry::ToolRegistry,
-    search_tools::{Glob, Grep},
 };
 
 fn make_workspace() -> PathBuf {
@@ -14,7 +14,7 @@ fn make_workspace() -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "silicon_agent_t2_test_{}_{}_{}",
+        "silicon_worker_t2_test_{}_{}_{}",
         std::process::id(),
         seq,
         std::time::SystemTime::now()

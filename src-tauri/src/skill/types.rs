@@ -16,6 +16,10 @@ pub struct SkillSummary {
     pub installed_at: String,
     /// 归属插件 id；None = 非 plugin 拥有。
     pub plugin_id: Option<String>,
+    /// **限定名**（T108 §6）：plugin 提供的公开技能 = `plugin_name:name`；其余 = None（用裸名）。
+    /// 呈现/解析层现算，**不落库**（冗余 plugin_name 的话，plugin 一改名就漂移）。
+    #[serde(default)]
+    pub qualified_name: Option<String>,
     /// 归属 team id；None = 非 team 私有。owner = plugin_id XOR team_id。
     pub team_id: Option<String>,
     /// 是否对用户可见/可调。
@@ -36,6 +40,7 @@ impl From<SkillRecord> for SkillSummary {
             enabled: r.enabled,
             installed_at: r.installed_at,
             plugin_id: r.plugin_id,
+            qualified_name: None, // 由 SkillService 按需填（需 join plugins 表取 plugin name）。
             team_id: r.team_id,
             user_invocable: r.user_invocable,
             argument_hint: r.argument_hint,

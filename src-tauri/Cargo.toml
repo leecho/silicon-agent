@@ -1,17 +1,16 @@
 [package]
-name = "silicon-agent"
+name = "silicon-worker"
 version = "0.1.0"
-description = "Silicon Agent — open-source desktop agent client"
-authors = ["Silicon Agent"]
+description = "silicon-worker agent workbench"
+authors = ["silicon-worker"]
 edition = "2021"
-license = "AGPL-3.0-or-later"
 
 [lib]
-name = "silicon_agent"
+name = "silicon_worker"
 path = "src/lib.rs"
 
 [[bin]]
-name = "silicon-agent"
+name = "silicon-worker"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -26,8 +25,12 @@ serde_json = "1.0"
 tauri = { version = "2.6.2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-ureq = { version = "2", features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+futures-util = "0.3"
+bytes = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+pdf-extract = "0.7"
 include_dir = "0.7"
 tauri-plugin-notification = "2.3.3"
 tungstenite = { version = "0.29.0", features = ["rustls-tls-native-roots"] }
@@ -36,6 +39,52 @@ base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
 url = "2.5"
+headless_chrome = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_System_Power", "Win32_Foundation"] }
+
+# enigo（动作合成：鼠标/键盘/滚动）跨平台，macOS 与 Windows 共用。
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+enigo = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility = "0.2"
+accessibility-sys = "0.2"
+core-foundation = "0.10"
+core-graphics-types = "0.2"
+# EventKit 原生 FFI（T90：日历/提醒工具 + 授权态查询）。
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSDate",
+    "NSArray",
+    "NSError",
+    "NSCalendar",
+    "NSTimeZone",
+    "NSObject",
+    "NSEnumerator",
+] }
+# AppKit：取前台应用 PID（NSWorkspace.frontmostApplication）以稳健定位无障碍快照目标（T84）。
+objc2-app-kit = { version = "0.3", features = [
+    "NSWorkspace",
+    "NSRunningApplication",
+] }
+objc2-event-kit = { version = "0.3.2", features = [
+    "EKEventStore",
+    "EKEvent",
+    "EKCalendar",
+    "EKReminder",
+    "EKObject",
+    "EKCalendarItem",
+    "EKParticipant",
+    "EKRecurrenceRule",
+    "EKTypes",
+    "EKSource",
+    "block2",
+] }
+
+# Windows UI Automation（无障碍树读取），内部传递 windows crate。
+[target.'cfg(target_os = "windows")'.dependencies]
+uiautomation = "0.25"

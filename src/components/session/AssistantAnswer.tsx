@@ -45,7 +45,7 @@ export function AssistantAnswer({ markdown }: { markdown: string }) {
 
   return (
     <div className="min-w-0 max-w-full pt-3">
-      <div ref={answerRef}>
+      <div ref={answerRef} data-quote-source="assistant">
         <MarkdownText
           value={markdown}
           className="max-w-full [overflow-wrap:anywhere]"

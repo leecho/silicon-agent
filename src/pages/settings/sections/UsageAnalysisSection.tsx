@@ -6,12 +6,16 @@ import { joinClasses } from "../../../components/ui/utils";
 import { UsageOverviewPanel } from "./usage/UsageOverviewPanel";
 import { UsageModelsPanel } from "./usage/UsageModelsPanel";
 import { UsageCachePanel } from "./usage/UsageCachePanel";
+import { UsageProjectsPanel } from "./usage/UsageProjectsPanel";
+import { UsageAgentsPanel } from "./usage/UsageAgentsPanel";
 
-type UsageTab = "overview" | "models" | "cache";
+type UsageTab = "overview" | "models" | "projects" | "agents" | "cache";
 
 const TABS: { id: UsageTab; label: string }[] = [
   { id: "overview", label: "概览" },
   { id: "models", label: "模型" },
+  { id: "projects", label: "项目" },
+  { id: "agents", label: "智能体" },
   { id: "cache", label: "缓存" },
 ];
 
@@ -109,6 +113,8 @@ export function UsageAnalysisSection() {
         <>
           {tab === "overview" && <UsageOverviewPanel data={data} range={range} />}
           {tab === "models" && <UsageModelsPanel data={data} />}
+          {tab === "projects" && <UsageProjectsPanel data={data} />}
+          {tab === "agents" && <UsageAgentsPanel data={data} />}
           {tab === "cache" && <UsageCachePanel data={data} />}
         </>
       )}

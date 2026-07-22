@@ -11,6 +11,10 @@ impl Tool for AddArtifact {
         ADD_ARTIFACT_TOOL
     }
 
+    fn disclosure(&self) -> crate::tools::Disclosure {
+        crate::tools::Disclosure::Deferred
+    }
+
     fn label(&self) -> &str {
         "登记产物"
     }

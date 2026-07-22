@@ -1,4 +1,4 @@
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::storage::AppDatabase;
 
 #[test]
 fn open_creates_storage_migration_ledger() {

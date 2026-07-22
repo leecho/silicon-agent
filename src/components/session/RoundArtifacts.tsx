@@ -110,7 +110,7 @@ export function RoundArtifacts({
   }
 
   return (
-    <div className="min-w-0 max-w-full rounded-lg  px-3 py-2.5">
+    <div className="min-w-0 max-w-full rounded-lg px-3 py-2.5">
       <div className="grid min-w-0 gap-2">
         {artifacts.map((a) => {
           const fileName = artifactFileName(a.path);
@@ -119,7 +119,7 @@ export function RoundArtifacts({
           return (
             <div
               key={a.path}
-              className="flex min-w-0 items-center gap-3 rounded-lg border border-border-subtle bg-background px-3 py-3"
+              className="flex min-w-0 items-center gap-3 rounded-lg border border-border-subtle  bg-surface  px-3 py-3"
             >
               <Tooltip content={a.path}>
                 <button
@@ -127,7 +127,7 @@ export function RoundArtifacts({
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
                   onClick={() => onOpen?.(a)}
                 >
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface text-foreground-secondary">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-accent text-foreground-secondary">
                     <Icon className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <span className="min-w-0 flex-1">

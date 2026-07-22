@@ -4,13 +4,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 
 /// 模拟真实 provider：流式逐帧 emit 累积 arguments 的 ToolCallCreated（先短后长），
 /// 最终以一条普通文本收口（不触发后续工具执行，专注验证预览 emission）。
@@ -20,6 +20,7 @@ impl ModelClient for PreviewClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         // 早帧：name 已到、args 仍空 → 引擎应跳过（不 emit 空预览）。

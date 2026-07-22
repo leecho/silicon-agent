@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Bot,
+  File,
   FileEdit,
+  FolderKanban,
   MessageSquare,
   Play,
   Settings,
@@ -12,16 +15,22 @@ import {
   deleteSession,
   getGlobalPermissionMode,
   getRecentWorkspaces,
+  listAgents,
+  listActiveTeams,
+  listExperts,
   listEnabledModels,
+  listProjects,
   listSessions,
   pickDirectory,
   pickFile,
   saveAttachment,
   setDraftContent,
+  setSessionRole,
   setSessionMode,
   setSessionModel,
   setSessionPermissionMode,
   setSessionWorkspace,
+  submitProjectDraftMessage,
   submitUserMessage,
 } from "../../api";
 import { Composer } from "../../components/session/Composer";
@@ -29,12 +38,19 @@ import { useSession } from "../../components/session/SessionProvider";
 import { Button } from "../../components/ui";
 import { useNotifications } from "../../components/ui/NotificationProvider";
 import { extractAttachments } from "../../lib/attachments";
+import { avatarEmoji } from "../../lib/avatar";
 import { hasEnabledModels } from "../../lib/modelAvailability";
 import type {
+  Agent,
+  ExpertSummary,
   EnabledProviderModels,
   PermissionMode,
+  Project,
   SessionInfo,
+  Team,
 } from "../../types";
+
+const HOME_SECTION_LIMIT = 5;
 
 function baseName(p: string): string {
   const t = p.replace(/[/\\]+$/, "");
@@ -54,8 +70,16 @@ function formatUpdatedAt(value: string): string {
 }
 
 export function HomePage({
+  onOpenAgent,
+  onOpenAgents,
+  onOpenProject,
+  onOpenProjects,
   onOpenSettings,
 }: {
+  onOpenAgent: (agentId: string) => void;
+  onOpenAgents: () => void;
+  onOpenProject: (projectId: string) => void;
+  onOpenProjects: () => void;
   onOpenSettings: () => void;
 }) {
   const {
@@ -72,10 +96,15 @@ export function HomePage({
   const latestContentRef = useRef("");
 
   const [modelGroups, setModelGroups] = useState<EnabledProviderModels[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [roleExperts, setRoleExperts] = useState<ExpertSummary[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [recents, setRecents] = useState<string[]>([]);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [draftSession, setDraftSession] = useState<SessionInfo | null>(null);
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
   const [draftSelectedModelId, setDraftSelectedModelId] = useState<string | null>(null);
   const [draftPermissionMode, setDraftPermissionMode] = useState<PermissionMode | null>(null);
   const [draftModeValue, setDraftModeValue] = useState<"normal" | "plan">("normal");
@@ -86,20 +115,36 @@ export function HomePage({
     try {
       const [
         modelResult,
+        teamResult,
+        expertResult,
+        agentResult,
+        projectResult,
         sessionResult,
         workspaceResult,
         permissionResult,
       ] = await Promise.allSettled([
         listEnabledModels(),
+        listActiveTeams(),
+        listExperts(),
+        listAgents(),
+        listProjects(),
         listSessions(),
         getRecentWorkspaces(),
         getGlobalPermissionMode(),
       ]);
 
       const nextModels = modelResult.status === "fulfilled" ? modelResult.value : [];
+      const nextTeams = teamResult.status === "fulfilled" ? teamResult.value : [];
+      const nextExperts = expertResult.status === "fulfilled" ? expertResult.value : [];
+      const nextAgents = agentResult.status === "fulfilled" ? agentResult.value : [];
+      const nextProjects = projectResult.status === "fulfilled" ? projectResult.value : [];
       const nextSessions = sessionResult.status === "fulfilled" ? sessionResult.value : [];
 
       setModelGroups(nextModels);
+      setTeams(nextTeams);
+      setRoleExperts(nextExperts);
+      setAgents(nextAgents);
+      setProjects(nextProjects);
       setSessions(nextSessions);
       setRecents(workspaceResult.status === "fulfilled" ? workspaceResult.value : []);
       if (permissionResult.status === "fulfilled") setGlobalPermMode(permissionResult.value);
@@ -196,6 +241,10 @@ export function HomePage({
   };
 
   const pickModel = async (modelId: string | null) => {
+    if (draftProjectId && !sessionIdRef.current) {
+      setDraftSelectedModelId(modelId);
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) return;
     try {
@@ -207,7 +256,31 @@ export function HomePage({
     }
   };
 
+  const pickRole = async (kind: string, id: string) => {
+    const sid = await ensureDraftSession();
+    if (!sid) return;
+    try {
+      await setSessionRole(sid, kind, id);
+      setDraftSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              roleKind: (kind || null) as "expert" | "team" | null,
+              roleId: id || null,
+            }
+          : prev,
+      );
+    } catch (err) {
+      console.error(err);
+      notify.error("设置角色失败：" + String(err));
+    }
+  };
+
   const switchPermissionMode = async (mode: PermissionMode | null) => {
+    if (draftProjectId && !sessionIdRef.current) {
+      setDraftPermissionMode(mode);
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) return;
     try {
@@ -220,6 +293,10 @@ export function HomePage({
   };
 
   const togglePlan = async () => {
+    if (draftProjectId && !sessionIdRef.current) {
+      setDraftModeValue((current) => (current === "plan" ? "normal" : "plan"));
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) return;
     const nextMode = (draftSession?.mode ?? draftModeValue) === "plan" ? "normal" : "plan";
@@ -236,6 +313,7 @@ export function HomePage({
   const pickWorkspace = async () => {
     const dir = await pickDirectory();
     if (!dir) return;
+    setDraftProjectId(null);
     const id = await ensureDraftSession();
     if (!id) return;
     try {
@@ -250,6 +328,7 @@ export function HomePage({
   };
 
   const pickRecent = async (path: string) => {
+    setDraftProjectId(null);
     const id = await ensureDraftSession();
     if (!id) return;
     try {
@@ -264,6 +343,27 @@ export function HomePage({
 
   const onSubmit = async (text: string): Promise<void> => {
     if (!text.trim()) return;
+    if (draftProjectId) {
+      submittedRef.current = true;
+      try {
+        const projectSessionId = await submitProjectDraftMessage({
+          projectId: draftProjectId,
+          content: text,
+          sourceDraftSessionId: sessionIdRef.current,
+          mode: (draftSession?.mode ?? draftModeValue) === "plan" ? "plan" : null,
+          permissionMode: draftSession?.permissionMode ?? draftPermissionMode,
+          selectedModelId: draftSession?.selectedModelId ?? draftSelectedModelId,
+        });
+        refreshSessions();
+        openSession(projectSessionId);
+      } catch (err) {
+        console.error(err);
+        notify.error("发送失败：" + String(err));
+        submittedRef.current = false;
+        throw err;
+      }
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) throw new Error("创建草稿失败");
     submittedRef.current = true;
@@ -281,6 +381,8 @@ export function HomePage({
 
   const modelReady = hasEnabledModels(modelGroups);
   const drafts = sessions.filter((session) => session.isDraft).slice(0, 4);
+  const homeAgents = agents.slice(0, HOME_SECTION_LIMIT);
+  const homeProjects = projects.slice(0, HOME_SECTION_LIMIT);
   const recentSessions = sessions
     .filter((session) => (!session.origin || session.origin === "user") && !session.isDraft && !session.projectId)
     .slice(0, 5);
@@ -291,10 +393,10 @@ export function HomePage({
   const effectiveSelectedModelId = draftSession?.selectedModelId ?? draftSelectedModelId;
 
   return (
-    <div className="h-full overflow-auto bg-background text-foreground">
-      <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col gap-6 px-6 py-8">
-        <section className="pt-[50px] pb-[20px] border-b border-dashed border-border">
-          <div className="mb-4 flex items-center justify-between gap-4 pl-5">
+    <div className="h-full overflow-auto bg-background p-6 pt-10 text-sm text-foreground">
+      <div className="mx-auto flex min-h-full w-full max-w-[860px] flex-col gap-6">
+        <section className="border-b border-dashed border-border pb-5 pt-4">
+          <div className="mb-4 flex items-center justify-between gap-4">
             <div className="min-w-0">
               <h1 className="text-xl font-semibold text-foreground">今天要处理什么？</h1>
               <p className="mt-1 text-sm text-foreground-muted">
@@ -317,6 +419,9 @@ export function HomePage({
               }}
               onAttachFile={onAttachFile}
               onPasteFile={onPasteFile}
+              projects={projects}
+              selectedProjectId={draftProjectId}
+              onPickProject={setDraftProjectId}
               workspaceName={dWsName}
               workspacePath={dDir || undefined}
               onPickWorkspace={pickWorkspace}
@@ -325,6 +430,11 @@ export function HomePage({
               modelGroups={modelGroups}
               selectedModelId={effectiveSelectedModelId}
               onPickModel={(id) => void pickModel(id)}
+              teams={teams}
+              roleExperts={roleExperts}
+              roleKind={draftProjectId ? "" : (draftSession?.roleKind ?? "")}
+              roleId={draftProjectId ? "" : (draftSession?.roleId ?? "")}
+              onPickRole={draftProjectId ? undefined : (k, i) => void pickRole(k, i)}
               planMode={effectiveMode === "plan"}
               onTogglePlan={() => void togglePlan()}
               permissionMode={effectivePermissionMode}
@@ -333,7 +443,7 @@ export function HomePage({
             />
         </section>
 
-        <section className="grid gap-8 lg:grid-cols-2 px-3">
+        <section className="grid gap-8 lg:grid-cols-2">
           <SectionList title="最近会话" loading={overviewLoading}>
             <SessionList
               emptyLabel="暂无最近会话"
@@ -350,6 +460,15 @@ export function HomePage({
             />
           </SectionList>
         </section>
+
+        <section className="grid gap-8 lg:grid-cols-2">
+          <SectionList title="项目" actionLabel="查看全部" onAction={onOpenProjects} loading={overviewLoading}>
+            <ProjectSummaryList projects={homeProjects} onOpenProject={onOpenProject} />
+          </SectionList>
+          <SectionList title="智能体" actionLabel="查看全部" onAction={onOpenAgents} loading={overviewLoading}>
+            <AgentSummaryList agents={homeAgents} onOpenAgent={onOpenAgent} />
+          </SectionList>
+        </section>
       </div>
     </div>
   );
@@ -359,6 +478,81 @@ function draftTitle(session: SessionInfo): string {
   const parsed = extractAttachments(session.draftContent ?? "");
   const content = parsed.body.trim();
   return content ? content.slice(0, 40) : session.title || "未命名草稿";
+}
+
+function ProjectSummaryList({
+  onOpenProject,
+  projects,
+}: {
+  onOpenProject: (projectId: string) => void;
+  projects: Project[];
+}) {
+  if (projects.length === 0) return <EmptyLine label="暂无项目" />;
+  return (
+    <div className="grid gap-1.5">
+      {projects.map((project) => (
+        <button
+          key={project.id}
+          type="button"
+          onClick={() => onOpenProject(project.id)}
+          className="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-background px-2.5 py-2 text-left transition hover:border-border hover:bg-accent"
+        >
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-surface text-primary">
+            <FolderKanban className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-medium text-foreground">
+              {project.name}
+            </span>
+            <span className="mt-0.5 block truncate text-[11px] text-foreground-muted">
+              {project.description || project.workspaceDir || formatUpdatedAt(project.updatedAt)}
+            </span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AgentSummaryList({
+  agents,
+  onOpenAgent,
+}: {
+  agents: Agent[];
+  onOpenAgent: (agentId: string) => void;
+}) {
+  if (agents.length === 0) return <EmptyLine label="暂无智能体" />;
+  return (
+    <div className="grid gap-1.5">
+      {agents.map((agent) => {
+        const emoji = avatarEmoji(agent.avatar);
+        return (
+          <button
+            key={agent.id}
+            type="button"
+            onClick={() => onOpenAgent(agent.id)}
+            className="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-background px-2.5 py-2 text-left transition hover:border-border hover:bg-accent"
+          >
+            <span
+              className={`grid h-7 w-7 shrink-0 place-items-center rounded-md bg-surface text-[15px] ${
+                agent.enabled ? "text-primary" : "text-foreground-muted"
+              }`}
+            >
+              {emoji ? <span aria-hidden="true">{emoji}</span> : <Bot className="h-3.5 w-3.5" aria-hidden="true" />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13px] font-medium text-foreground">
+                {agent.displayName || agent.name}
+              </span>
+              <span className="mt-0.5 block truncate text-[11px] text-foreground-muted">
+                {agent.profession || agent.workingDir || formatUpdatedAt(agent.updatedAt)}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function SectionList({

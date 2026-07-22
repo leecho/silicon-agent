@@ -106,6 +106,30 @@ pub fn set_max_iterations(services: State<'_, AppState>, n: u32) -> Result<(), S
     services.app_settings.set_max_iterations(n)
 }
 
+/// 读单工具执行超时秒数（缺省 30，clamp 1..=1800）。
+#[tauri::command]
+pub fn get_tool_timeout_secs(services: State<'_, AppState>) -> Result<u64, String> {
+    services.app_settings.get_tool_timeout_secs()
+}
+
+/// 设单工具执行超时秒数（clamp 1..=1800）。
+#[tauri::command]
+pub fn set_tool_timeout_secs(services: State<'_, AppState>, n: u64) -> Result<(), String> {
+    services.app_settings.set_tool_timeout_secs(n)
+}
+
+/// 读工具并行执行上限（缺省 8，clamp 1..=32；1=串行）。
+#[tauri::command]
+pub fn get_tool_parallelism(services: State<'_, AppState>) -> Result<u64, String> {
+    services.app_settings.get_tool_parallelism()
+}
+
+/// 设工具并行执行上限（clamp 1..=32）。
+#[tauri::command]
+pub fn set_tool_parallelism(services: State<'_, AppState>, n: u64) -> Result<(), String> {
+    services.app_settings.set_tool_parallelism(n)
+}
+
 /// 读子代理执行方式（parallel|serial，缺省 parallel）。
 #[tauri::command]
 pub fn get_subagent_execution_mode(services: State<'_, AppState>) -> Result<String, String> {
@@ -119,35 +143,6 @@ pub fn set_subagent_execution_mode(
     mode: String,
 ) -> Result<(), String> {
     services.app_settings.set_subagent_execution_mode(&mode)
-}
-
-/// Agent 人设 DTO：空串表示未设置（便于前端 textarea 双向绑定）。
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPersonaDto {
-    pub identity: String,
-    pub soul: String,
-}
-
-/// 读当前 Agent 人设（身份 + 灵魂）。未设置的字段返回空串。
-#[tauri::command]
-pub fn get_agent_persona(services: State<'_, AppState>) -> Result<AgentPersonaDto, String> {
-    Ok(AgentPersonaDto {
-        identity: services.app_settings.get_agent_identity()?.unwrap_or_default(),
-        soul: services.app_settings.get_agent_soul()?.unwrap_or_default(),
-    })
-}
-
-/// 写 Agent 人设。identity/soul 传 None 或空白即清除该字段（回退默认）。
-#[tauri::command]
-pub fn set_agent_persona(
-    services: State<'_, AppState>,
-    identity: Option<String>,
-    soul: Option<String>,
-) -> Result<(), String> {
-    services.app_settings.set_agent_identity(identity.as_deref())?;
-    services.app_settings.set_agent_soul(soul.as_deref())?;
-    Ok(())
 }
 
 /// 手动重试上一轮失败的模型调用：把失败的 partial assistant 标 compacted=1（保留痕迹、

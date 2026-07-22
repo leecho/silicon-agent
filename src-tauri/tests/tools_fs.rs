@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use silicon_agent::tools::{
+use silicon_worker::tools::{
     fs_tools::{ReadFile, WriteFile},
     registry::{cap_result, ToolRegistry},
     sandbox::resolve_in_workspace,
@@ -9,7 +9,7 @@ use silicon_agent::tools::{
 
 fn make_workspace() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "silicon_agent_test_{}",
+        "silicon_worker_test_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

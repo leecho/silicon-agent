@@ -75,6 +75,11 @@ impl SessionStore {
                         kind text not null default 'final',
                         primary key (session_id, path)
                     );
+                    create table if not exists session_activated_tools (
+                        session_id text not null,
+                        tool_name text not null,
+                        primary key (session_id, tool_name)
+                    );
                     ",
                 )?;
                 Ok(())

@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::{
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::{
     command_tool::CommandExecute,
+    fs_search::{Glob, Grep},
     fs_tools::{EditFile, ReadFile, WriteFile},
-    search_tools::{Glob, Grep},
     web_search::WebSearch,
     Tool,
 };

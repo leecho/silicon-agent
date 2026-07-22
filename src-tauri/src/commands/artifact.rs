@@ -367,16 +367,105 @@ pub fn read_artifact(
     let workspace = services
         .engine_builder
         .resolve_session_workspace(&session_id)?;
-    let resolved = resolve_artifact_action_path(&workspace, &path)?;
-    let meta = std::fs::metadata(&resolved).map_err(|e| format!("读取产物失败：{e}"))?;
+    read_workspace_file(&workspace, &path)
+}
+
+/// 读取工作目录内某文件用于预览（沙箱限定在 workspace 内）。>5MB → 当作 binary（不读全量）。
+fn read_workspace_file(
+    workspace: &std::path::Path,
+    path: &str,
+) -> Result<ArtifactContent, String> {
+    let resolved = resolve_artifact_action_path(workspace, path)?;
+    let meta = std::fs::metadata(&resolved).map_err(|e| format!("读取文件失败：{e}"))?;
     if meta.len() > 5 * 1024 * 1024 {
         return Ok(ArtifactContent {
             kind: "binary".to_string(),
             content: String::new(),
         });
     }
-    let bytes = std::fs::read(&resolved).map_err(|e| format!("读取产物失败：{e}"))?;
-    Ok(classify_artifact(&path, &bytes))
+    let bytes = std::fs::read(&resolved).map_err(|e| format!("读取文件失败：{e}"))?;
+    Ok(classify_artifact(path, &bytes))
+}
+
+/// 列出项目工作目录内的文件相对路径（工作目录 Tab 的文件树用）。
+#[tauri::command]
+pub fn list_project_workspace_files(
+    services: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<String>, String> {
+    let workspace = services.facade.ensure_project_workspace(&project_id)?;
+    list_workspace_file_paths(std::path::Path::new(&workspace), 500)
+}
+
+/// 读取项目工作目录内某文件用于预览。
+#[tauri::command]
+pub fn read_project_workspace_file(
+    services: State<'_, AppState>,
+    project_id: String,
+    path: String,
+) -> Result<ArtifactContent, String> {
+    let workspace = services.facade.ensure_project_workspace(&project_id)?;
+    read_workspace_file(std::path::Path::new(&workspace), &path)
+}
+
+/// 列出智能体工作目录内的文件相对路径（工作目录 Tab 的文件树用）。
+#[tauri::command]
+pub fn list_agent_workspace_files(
+    services: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<String>, String> {
+    let workspace = services.agents.ensure_workspace(&agent_id)?;
+    list_workspace_file_paths(&workspace, 500)
+}
+
+/// 读取智能体工作目录内某文件用于预览。
+#[tauri::command]
+pub fn read_agent_workspace_file(
+    services: State<'_, AppState>,
+    agent_id: String,
+    path: String,
+) -> Result<ArtifactContent, String> {
+    let workspace = services.agents.ensure_workspace(&agent_id)?;
+    read_workspace_file(&workspace, &path)
+}
+
+/// 用系统默认应用打开工作目录内某文件（沙箱校验，禁止越出工作区）。
+fn open_workspace_file(
+    app: &tauri::AppHandle,
+    workspace: &std::path::Path,
+    path: &str,
+) -> Result<(), String> {
+    let resolved = resolve_artifact_action_path(workspace, path)?;
+    if !resolved.exists() {
+        return Err(format!("文件不存在：{}", resolved.display()));
+    }
+    app.opener()
+        .open_path(resolved.to_string_lossy().into_owned(), None::<String>)
+        .map_err(|err| format!("打开文件失败：{err}"))
+}
+
+/// 用系统默认应用打开项目工作目录内某文件。
+#[tauri::command]
+pub fn open_project_workspace_file(
+    app: tauri::AppHandle,
+    services: State<'_, AppState>,
+    project_id: String,
+    path: String,
+) -> Result<(), String> {
+    let workspace = services.facade.ensure_project_workspace(&project_id)?;
+    open_workspace_file(&app, std::path::Path::new(&workspace), &path)
+}
+
+/// 用系统默认应用打开智能体工作目录内某文件。
+#[tauri::command]
+pub fn open_agent_workspace_file(
+    app: tauri::AppHandle,
+    services: State<'_, AppState>,
+    agent_id: String,
+    path: String,
+) -> Result<(), String> {
+    let workspace = services.agents.ensure_workspace(&agent_id)?;
+    open_workspace_file(&app, &workspace, &path)
 }
 
 #[cfg(test)]
@@ -385,7 +474,7 @@ mod artifact_tests {
 
     #[test]
     fn resolve_artifact_action_path_stays_inside_workspace() {
-        let workspace = std::path::Path::new("/tmp/silicon-agent-test/session-1");
+        let workspace = std::path::Path::new("/tmp/silicon-worker-test/session-1");
 
         let resolved = super::resolve_artifact_action_path(workspace, "reports/a.docx").unwrap();
         assert_eq!(resolved, workspace.join("reports/a.docx"));

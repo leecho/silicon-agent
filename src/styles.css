@@ -76,7 +76,7 @@
 /* ---- 深色主题覆盖（默认浅色）。挂在 documentElement 上，使弹层 portal 也继承。 ---- */
 .theme-dark {
   color-scheme: dark;
-  --background: #0e0f10;
+  --background: #1b1c1d;
   --foreground: #ececee;
   --foreground-secondary: #b4b8bf;
   --foreground-muted: #747a83;
@@ -174,4 +174,30 @@ select {
       transparent 48%
     );
   animation: ui-activity-breathe-pulse 2.6s ease-in-out infinite;
+}
+
+/* 隐藏滚动条但保留滚动能力（用于横向 tab 条等窄容器）。 */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/WebKit */
+}
+
+/*
+ * 过程区弱化 markdown（.md-muted）：
+ * ① 标题继承弱化色（不强制 foreground），令过程区整体与工具概览同色；
+ * ② 松散列表 WebKit 兜底——把「单段落列表项」的 <p> 改为 inline，消除块级子元素+
+ *    空白行盒导致的 <li> 凭空撑高（与 rehypeTrimBlockWhitespace 互为双保险）。
+ */
+.md-muted :is(h1, h2, h3, h4, h5, h6) {
+  color: inherit;
+}
+.md-muted li > p:only-child {
+  display: inline;
+}
+.md-muted li > p {
+  margin-top: 0;
+  margin-bottom: 0;
 }

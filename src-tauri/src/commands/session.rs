@@ -73,6 +73,27 @@ pub fn get_session(
     services.facade.session_with_pending(&session_id)
 }
 
+/// 按 (父会话, dispatch tool_call id) 找 child（专家）会话 id；供前端「打开专家」侧栏定位。
+#[tauri::command]
+pub fn find_child_session(
+    services: State<'_, AppState>,
+    session_id: String,
+    tool_call_id: String,
+) -> Result<Option<String>, String> {
+    services
+        .session
+        .find_child_by_dispatch(&session_id, &tool_call_id)
+}
+
+/// 列某会话的专家（child 子运行）+ 状态，供右侧面板展示。
+#[tauri::command]
+pub fn list_session_children(
+    services: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<crate::session::ChildAgentSummary>, String> {
+    services.facade.session_children(&session_id)
+}
+
 /// 设/清会话运行角色（kind 为空串 = 自由模式；否则 kind∈{"expert","team"} + id）。
 #[tauri::command]
 pub fn set_session_role(

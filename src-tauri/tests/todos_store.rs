@@ -4,8 +4,8 @@
 // ② get_session_detail.todos 含已落库的清单。
 // ③ 从未写入 todos_json → 空 Vec。
 
-use silicon_agent::session::{SessionStore, TodoItem};
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::{SessionStore, TodoItem};
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 fn temp_db() -> Arc<AppDatabase> {

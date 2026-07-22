@@ -40,23 +40,34 @@ export function attachmentKind(name: string): "image" | "file" {
 
 // 消息文本里的附件以 ⟦@相对路径⟧ 标记（与技能 ⟦技能：名⟧ 区分）。
 const ATTACHMENT_MARKER = /⟦@([^⟧]+)⟧/g;
+// 划词引用以 ⟦引用：文本⟧ 标记（与附件 ⟦@…⟧、技能 ⟦技能：…⟧ 区分）。
+const QUOTE_MARKER = /⟦引用：([^⟧]+)⟧/g;
 
-/** 把消息文本拆成「附件列表 + 去掉附件标记后的正文」（正文仍含技能标记，交给 messageChips 渲染）。 */
+/**
+ * 把消息文本拆成「附件列表 + 引用片段列表 + 去掉这两类标记后的正文」。
+ * 正文仍含技能标记，交给 messageChips 渲染。
+ */
 export function extractAttachments(content: string): {
   attachments: { relPath: string; name: string; kind: "image" | "file" }[];
+  quotes: string[];
   body: string;
 } {
   const attachments: { relPath: string; name: string; kind: "image" | "file" }[] = [];
+  const quotes: string[] = [];
   const body = content
     .replace(ATTACHMENT_MARKER, (_m, p: string) => {
       const name = basename(p);
       attachments.push({ relPath: p, name, kind: attachmentKind(name) });
       return "";
     })
-    // 附件标记是提交时前置的整行，去掉后清理残留的前导空行。
+    .replace(QUOTE_MARKER, (_m, q: string) => {
+      quotes.push(q);
+      return "";
+    })
+    // 附件/引用标记是提交时前置的整行，去掉后清理残留的前导空行。
     .replace(/^\s*\n/, "")
     .replace(/^\n+/, "");
-  return { attachments, body };
+  return { attachments, quotes, body };
 }
 
 /** 读取附件字节并生成可用于 <img src> 的 object URL（调用方负责 revoke）。 */

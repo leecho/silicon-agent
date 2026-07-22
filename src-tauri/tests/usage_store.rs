@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use silicon_agent::provider::client::ModelUsage;
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::usage::{UsageRecord, UsageStore};
+use silicon_worker::provider::client::ModelUsage;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::usage::{UsageRecord, UsageStore};
 
 fn temp_db() -> Arc<AppDatabase> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -2,11 +2,8 @@ import {
   useEffect,
   useState,
   type MouseEvent,
-  type ReactNode,
 } from "react";
-import type { LucideIcon } from "lucide-react";
 import {
-  AlertTriangle,
   Clipboard,
   ExternalLink,
   FileQuestion,
@@ -18,7 +15,6 @@ import {
   DropdownMenu,
   type DropdownMenuPosition,
 } from "../ui/DropdownMenu";
-import { MarkdownText } from "../ui/MarkdownText";
 import { useNotifications } from "../ui/NotificationProvider";
 import { SplitButton } from "../ui/SplitButton";
 import {
@@ -33,130 +29,7 @@ import {
   artifactFullPath,
   artifactIcon,
 } from "./artifactFilePresentation";
-
-function PreviewStateCard({
-  action,
-  icon: StatusIcon,
-  message,
-  title,
-  tone = "neutral",
-}: {
-  action?: ReactNode;
-  icon: LucideIcon;
-  message: ReactNode;
-  title: string;
-  tone?: "error" | "neutral";
-}) {
-  return (
-    <div className="grid h-full place-items-center rounded-lg  bg-card px-5 py-8 text-center">
-      <div className="max-w-sm">
-        <StatusIcon
-          className={`mx-auto mb-3 h-8 w-8 ${
-            tone === "error" ? "text-destructive" : "text-foreground-muted"
-          }`}
-          aria-hidden="true"
-        />
-        <div className="text-sm font-semibold text-foreground">{title}</div>
-        <div className="mt-2 break-words text-[13px] leading-6 text-foreground-muted">
-          {message}
-        </div>
-        {action && <div className="mt-4 flex justify-center">{action}</div>}
-      </div>
-    </div>
-  );
-}
-
-const HTML_PREVIEW_CSP = [
-  "default-src 'none'",
-  "script-src 'unsafe-inline' https:",
-  "style-src 'unsafe-inline' https:",
-  "img-src data: blob: https:",
-  "font-src data: https:",
-  "media-src data: blob:",
-  "connect-src https:",
-  "frame-src 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join("; ");
-
-const STATIC_PREVIEW_CSP = [
-  "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "img-src data:",
-  "font-src data:",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join("; ");
-
-function readPreviewThemeCss(): string {
-  if (typeof document === "undefined" || typeof window === "undefined") {
-    return "";
-  }
-  const root = document.documentElement;
-  const styles = window.getComputedStyle(root);
-  const readToken = (name: string, fallback: string) =>
-    styles.getPropertyValue(name).trim() || fallback;
-  const colorScheme = document.documentElement.classList.contains("theme-dark")
-    ? "dark"
-    : "light";
-
-  return `
-:root {
-  color-scheme: ${colorScheme};
-  --preview-bg-page: ${readToken("--background", "#ffffff")};
-  --preview-bg-panel: ${readToken("--card", "#f7f7f6")};
-  --preview-bg-raised: ${readToken("--popover", "#ffffff")};
-  --preview-bg-hover: ${readToken("--accent", "rgb(0 0 0 / 5%)")};
-  --preview-text-primary: ${readToken("--foreground", "#18181b")};
-  --preview-text-secondary: ${readToken("--foreground-secondary", "#5f6368")};
-  --preview-text-tertiary: ${readToken("--foreground-muted", "#8a8d91")};
-  --preview-border-subtle: ${readToken("--border-subtle", "rgb(0 0 0 / 5%)")};
-  --preview-border-default: ${readToken("--border", "rgb(0 0 0 / 8%)")};
-}
-html,
-body {
-  background: var(--preview-bg-page) !important;
-  color: var(--preview-text-primary) !important;
-}
-main {
-  background: var(--preview-bg-page) !important;
-}
-header {
-  border-bottom-color: var(--preview-border-default) !important;
-}
-.muted {
-  color: var(--preview-text-secondary) !important;
-}
-.notice,
-.slide {
-  background: var(--preview-bg-panel) !important;
-  border-color: var(--preview-border-default) !important;
-}
-td,
-th {
-  border-color: var(--preview-border-default) !important;
-}
-`;
-}
-
-function withHtmlNetworkPreviewCsp(html: string): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}">`;
-  if (/<head\b[^>]*>/i.test(html)) {
-    return html.replace(/<head\b[^>]*>/i, (head) => `${head}${meta}`);
-  }
-  return `${meta}${html}`;
-}
-
-function withThemedStaticPreviewCsp(html: string, previewThemeCss: string): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${STATIC_PREVIEW_CSP}">`;
-  const themeStyle = `<style data-app-preview-theme>${previewThemeCss}</style>`;
-  if (/<head\b[^>]*>/i.test(html)) {
-    return html.replace(/<head\b[^>]*>/i, (head) => `${head}${meta}${themeStyle}`);
-  }
-  return `${meta}${themeStyle}${html}`;
-}
+import { ArtifactContentView, PreviewErrorCard } from "./ArtifactContentView";
 
 // 产物预览右侧抽屉：md 渲染 / 纯文本 / 二进制系统打开。artifact 为空时不渲染。
 export function ArtifactPreviewDrawer({
@@ -181,7 +54,6 @@ export function ArtifactPreviewDrawer({
     x: 0,
     y: 0,
   });
-  const [previewThemeCss, setPreviewThemeCss] = useState(readPreviewThemeCss);
 
   useEffect(() => {
     if (!artifact) return;
@@ -198,18 +70,6 @@ export function ArtifactPreviewDrawer({
       cancelled = true;
     };
   }, [sessionId, artifact]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const refreshPreviewTheme = () => setPreviewThemeCss(readPreviewThemeCss());
-    refreshPreviewTheme();
-    const observer = new MutationObserver(refreshPreviewTheme);
-    observer.observe(document.documentElement, {
-      attributeFilter: ["class"],
-      attributes: true,
-    });
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     setMenuOpen(false);
@@ -327,64 +187,12 @@ export function ArtifactPreviewDrawer({
               </div>
             </div>
           )}
-          {state.phase === "error" && (
-            <PreviewStateCard
-              icon={AlertTriangle}
-              message={state.message}
-              title="预览错误"
-              tone="error"
-            />
-          )}
-          {state.phase === "ready" && state.content.kind === "markdown" && (
-            <div className="mx-auto max-w-[820px] rounded-lg   px-5 py-4">
-              <MarkdownText
-                value={state.content.content}
-                className="max-w-full [overflow-wrap:anywhere]"
-              />
-            </div>
-          )}
-          {state.phase === "ready" && state.content.kind === "text" && (
-            <div className="rounded-lg  bg-surface">
-              <pre className="max-w-full overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[12px] leading-6 text-foreground-secondary [overflow-wrap:anywhere]">
-                {state.content.content}
-              </pre>
-            </div>
-          )}
-          {state.phase === "ready" && state.content.kind === "pdf" && (
-            <div className="h-full overflow-hidden rounded-lg  bg-surface">
-              <iframe
-                data-pdf-preview
-                title={fileName}
-                src={state.content.content}
-                className="h-full w-full bg-background"
-              />
-            </div>
-          )}
-          {state.phase === "ready" && state.content.kind === "html" && (
-            <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg  bg-surface">
-              <iframe
-                data-html-preview
-                sandbox="allow-scripts"
-                title={fileName}
-                srcDoc={withHtmlNetworkPreviewCsp(state.content.content)}
-                className="min-h-0 flex-1 bg-background"
-              />
-            </div>
-          )}
-          {state.phase === "ready" && state.content.kind === "office" && (
-            <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg  bg-surface">
-              <iframe
-                data-office-preview
-                sandbox=""
-                title={fileName}
-                srcDoc={withThemedStaticPreviewCsp(state.content.content, previewThemeCss)}
-                className="min-h-0 flex-1 bg-background"
-              />
-            </div>
-          )}
-          {state.phase === "ready" && state.content.kind === "binary" && (
-            <PreviewStateCard
-              action={
+          {state.phase === "error" && <PreviewErrorCard message={state.message} />}
+          {state.phase === "ready" && (
+            <ArtifactContentView
+              content={state.content}
+              fileName={fileName}
+              binaryAction={
                 <button
                   type="button"
                   disabled={!artifact}
@@ -395,9 +203,6 @@ export function ArtifactPreviewDrawer({
                   打开
                 </button>
               }
-              icon={FileQuestion}
-              message="该文件可能是二进制格式，可以用系统默认应用打开查看。"
-              title="无法在应用内预览"
             />
           )}
         </div>

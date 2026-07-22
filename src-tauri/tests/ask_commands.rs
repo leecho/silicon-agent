@@ -9,15 +9,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::{Engine, PendingInteraction};
-use silicon_agent::provider::client::{
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::{Engine, PendingInteraction};
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::{new_id, PendingAsk, SessionStore};
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::ask_user::AskUser;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::{new_id, PendingAsk, SessionStore};
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::ask_user::AskUser;
+use silicon_worker::tools::ToolRegistry;
 
 // ---------------------------------------------------------------------------
 // Two-turn mock client: turn 0 requests ask_user, turn 1 gives final answer.
@@ -31,6 +31,7 @@ impl ModelClient for AskClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);

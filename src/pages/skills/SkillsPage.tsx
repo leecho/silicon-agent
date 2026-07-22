@@ -1,22 +1,28 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowUpRight, Plus, Search, Sparkles, Wrench } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRight, ChevronDown, Folder, Plus, Sparkles, Wrench } from "lucide-react";
 import {
+  createGroup,
+  deleteGroup,
+  listGroups,
   listSkills,
+  renameGroup,
+  setSkillGroup,
   toggleSkill,
   uninstallSkill,
 } from "../../api";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { GroupFilterBar } from "../../components/groups/GroupFilterBar";
+import { DropdownMenu, type DropdownMenuAnchor, type DropdownMenuEntry } from "../../components/ui";
 import { useSession } from "../../components/session/SessionProvider";
+import { useMessages } from "../../components/ui/MessageProvider";
 import { useNotifications } from "../../components/ui/NotificationProvider";
 import { skillIcon } from "../../lib/skillPresentation";
-import type { Skill } from "../../types";
+import type { Group, Skill } from "../../types";
 import { SkillDetailDrawer } from "./SkillDetailDrawer";
 import { SkillInstallModal } from "./SkillInstallModal";
+import { OwnerGroupTitle } from "../extensions/OwnerGroupTitle";
 import { Switch } from "../../components/ui/Switch";
-import { useMessages } from "../../components/ui/MessageProvider";
-
-type SkillPageTab = "plaza" | "mine";
 
 // 「使用 AI 创建技能」入口注入 composer 的提示词。按本项目实际流程编写：
 // 技能在会话工作区内创作，再由 install_skill 工具登记（需用户确认）——本应用无虚拟机运行时，
@@ -26,14 +32,22 @@ const CREATE_SKILL_PROMPT =
   "调用 install_skill 工具完成登记（会请求我确认），登记后即可在技能列表中使用。" +
   "请先问我这个技能应该做什么。";
 
-export function SkillsPage() {
+/**
+ * `embedded`：作为「扩展」页的技能 Tab 内嵌时——隐藏自带 h1（与胶囊 Tab 标签重复）
+ * 与内部「技能广场」子 Tab（广场已统一到「扩展 → 市场」Tab）。T106 §5.2。
+ */
+export function SkillsPage({
+  embedded = false,
+}: { embedded?: boolean } = {}) {
   const messages = useMessages();
   const notifications = useNotifications();
   const { enterDraftWithContent } = useSession();
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [tab, setTab] = useState<SkillPageTab>("plaza");
   const [detailId, setDetailId] = useState<string | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
+  const [groups, setGroups] = useState<Group[]>([]);
+  // null=全部；"ungrouped"=未分组；其余=group id。
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
   async function reload() {
     try {
@@ -43,12 +57,86 @@ export function SkillsPage() {
     }
   }
 
+  async function reloadGroups() {
+    try {
+      setGroups(await listGroups("skill"));
+    } catch (err) {
+      notifications.notify({ tone: "error", title: "加载分组失败", message: String(err) });
+    }
+  }
+
   useEffect(() => {
     void reload();
   }, []);
 
-  const builtin = useMemo(() => skills.filter((s) => s.source === "builtin"), [skills]);
+  useEffect(() => {
+    void reloadGroups();
+  }, []);
+
+  async function handleCreateGroup(name: string) {
+    try {
+      await createGroup("skill", name);
+      await reloadGroups();
+    } catch (err) {
+      notifications.notify({ tone: "error", title: "新建分组失败", message: String(err) });
+    }
+  }
+  async function handleRenameGroup(id: string, name: string) {
+    try {
+      await renameGroup(id, name);
+      await reloadGroups();
+    } catch (err) {
+      notifications.notify({ tone: "error", title: "重命名失败", message: String(err) });
+    }
+  }
+  async function handleDeleteGroup(g: Group) {
+    const ok = await messages.confirm({
+      title: "删除分组",
+      message: `确定删除分组「${g.name}」吗？组内技能不会被删除，只会变成未分组。`,
+      tone: "warning",
+      confirmText: "删除",
+    });
+    if (!ok) return;
+    try {
+      await deleteGroup(g.id, "skill");
+      if (selectedGroup === g.id) setSelectedGroup(null);
+      await Promise.all([reloadGroups(), reload()]);
+    } catch (err) {
+      notifications.notify({ tone: "error", title: "删除分组失败", message: String(err) });
+    }
+  }
+  async function handleMoveSkill(skill: Skill, groupId: string | null) {
+    try {
+      await setSkillGroup(skill.id, groupId);
+      await reload();
+    } catch (err) {
+      notifications.notify({ tone: "error", title: "移动失败", message: String(err) });
+    }
+  }
+
   const enabledCount = useMemo(() => skills.filter((s) => s.enabled).length, [skills]);
+  const ungroupedCount = useMemo(() => skills.filter((s) => !s.groupId).length, [skills]);
+  const countByGroup = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const s of skills) if (s.groupId) m[s.groupId] = (m[s.groupId] ?? 0) + 1;
+    return m;
+  }, [skills]);
+  const filteredMineSkills = useMemo(() => {
+    return skills.filter((skill) => {
+      if (selectedGroup === "ungrouped" && skill.groupId) return false;
+      if (selectedGroup && selectedGroup !== "ungrouped" && skill.groupId !== selectedGroup) return false;
+      return true;
+    });
+  }, [skills, selectedGroup]);
+  // owner 分组（T106 §5.3）：「我的」= 用户自建/装的；「来自插件」= 随插件带来的。
+  const ownSkills = useMemo(
+    () => filteredMineSkills.filter((s) => !s.pluginId),
+    [filteredMineSkills],
+  );
+  const pluginSkills = useMemo(
+    () => filteredMineSkills.filter((s) => s.pluginId),
+    [filteredMineSkills],
+  );
 
   async function handleToggle(skill: Skill) {
     try {
@@ -76,64 +164,86 @@ export function SkillsPage() {
   }
 
   return (
-    <div className="h-full overflow-auto p-6 text-sm">
+    <div className="h-full overflow-auto px-6 py-3 text-sm">
       <div className="mx-auto max-w-[860px]">
-        <div className="mb-5 mt-4 flex items-start justify-between gap-4">
+        <div className="mb-5 flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-foreground">技能</h1>
-            <p className="mt-1 text-xs text-foreground-muted">
+            {!embedded && <h1 className="text-xl font-semibold text-foreground">技能</h1>}
+            <p className="mt-1 text-sm text-foreground">
               发现、安装和管理技能，启用后模型可按需加载详情。
             </p>
+            {/* {skills.length > 0 && (
+              <span className="text-xs text-foreground-muted">
+                已启用 {enabledCount} / {skills.length}
+              </span>
+            )} */}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Button tone="secondary" onClick={() => enterDraftWithContent(CREATE_SKILL_PROMPT)}>
+            <Button tone="primary" onClick={() => enterDraftWithContent(CREATE_SKILL_PROMPT)}>
               <Sparkles className="h-4 w-4" aria-hidden="true" />
               AI 创建
             </Button>
-            <Button tone="primary" onClick={() => setInstallOpen(true)}>
+            <Button tone="secondary" onClick={() => setInstallOpen(true)}>
               <Plus className="h-4 w-4" aria-hidden="true" />
               安装
             </Button>
           </div>
         </div>
 
-        <div className="mb-5 flex items-end justify-between gap-3 border-b border-border-subtle">
-          <div className="flex items-end gap-2">
-            <TabButton active={tab === "plaza"} onClick={() => setTab("plaza")}>
-              技能广场
-            </TabButton>
-            <TabButton active={tab === "mine"} onClick={() => setTab("mine")}>
-              我的技能
-              <Badge tone={tab === "mine" ? "info" : "neutral"}>{skills.length}</Badge>
-            </TabButton>
-          </div>
-          {tab === "mine" && skills.length > 0 && (
-            <span className="pb-2.5 text-xs text-foreground-muted">
-              已启用 {enabledCount} / {skills.length}
-            </span>
-          )}
-        </div>
-
-        {tab === "plaza" && (
-          <SkillPlaza
-            skills={builtin}
-            onOpen={setDetailId}
-            onUse={(skillName) => enterDraftWithContent(`⟦技能：${skillName}⟧ `)}
-          />
-        )}
-
-        {tab === "mine" && (
-          skills.length === 0 ? (
-            <EmptyState onInstall={() => setInstallOpen(true)} />
-          ) : (
-            <SkillGrid
-              onOpen={setDetailId}
-              onToggle={handleToggle}
-              onUninstall={handleUninstall}
-              onUse={(skillName) => enterDraftWithContent(`⟦技能：${skillName}⟧ `)}
-              skills={skills}
-            />
-          )
+        {skills.length === 0 ? (
+          <EmptyState onInstall={() => setInstallOpen(true)} />
+        ) : (
+            <>
+              <GroupFilterBar
+                groups={groups}
+                selected={selectedGroup}
+                onSelect={setSelectedGroup}
+                total={skills.length}
+                ungroupedCount={ungroupedCount}
+                countByGroup={countByGroup}
+                onCreate={handleCreateGroup}
+                onRename={handleRenameGroup}
+                onDelete={handleDeleteGroup}
+              />
+              {filteredMineSkills.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center text-sm text-foreground-muted">
+                  没有匹配的技能
+                </div>
+              ) : (
+                <div className="flex flex-col gap-6">
+                  {ownSkills.length > 0 && (
+                    <section>
+                      <OwnerGroupTitle title="我的" count={ownSkills.length} />
+                      <SkillList
+                        groups={groups}
+                        onMove={handleMoveSkill}
+                        onOpen={setDetailId}
+                        onToggle={handleToggle}
+                        onUninstall={handleUninstall}
+                        onUse={(skillName) => enterDraftWithContent(`⟦技能：${skillName}⟧ `)}
+                        skills={ownSkills}
+                      />
+                    </section>
+                  )}
+                  {pluginSkills.length > 0 && (
+                    <section>
+                      <OwnerGroupTitle
+                        title="来自插件"
+                        count={pluginSkills.length}
+                        hint="随插件安装，卸载插件即一并移除"
+                      />
+                      <SkillList
+                        groups={groups}
+                        onOpen={setDetailId}
+                        onUse={(skillName) => enterDraftWithContent(`⟦技能：${skillName}⟧ `)}
+                        readOnly
+                        skills={pluginSkills}
+                      />
+                    </section>
+                  )}
+                </div>
+              )}
+          </>
         )}
       </div>
 
@@ -142,7 +252,6 @@ export function SkillsPage() {
         onClose={() => setInstallOpen(false)}
         onInstalled={() => {
           setInstallOpen(false);
-          setTab("mine");
           void reload();
         }}
       />
@@ -151,125 +260,68 @@ export function SkillsPage() {
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`-mb-px flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm transition-colors ${
-        active
-          ? "border-primary font-medium text-foreground"
-          : "border-transparent text-foreground-secondary hover:text-foreground"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
 
-function SkillPlaza({
-  onOpen,
-  onUse,
-  skills,
-}: {
-  onOpen: (skillId: string) => void;
-  onUse: (skillName: string) => void;
-  skills: Skill[];
-}) {
-  const [query, setQuery] = useState("");
-  const filtered = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase();
-    if (!q) return skills;
-    return skills.filter((skill) =>
-      [skill.name, skill.description, skill.argumentHint]
-        .filter(Boolean)
-        .join(" ")
-        .toLocaleLowerCase()
-        .includes(q),
-    );
-  }, [query, skills]);
-
-  return (
-    <>
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[220px] flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-muted" aria-hidden="true" />
-          <input
-            className="w-full rounded-md border border-border bg-background py-2 pl-8 pr-3 text-sm text-foreground outline-none focus:border-primary"
-            placeholder="搜索技能名称或描述"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-      </div>
-      {filtered.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center text-sm text-foreground-muted">
-          没有匹配的技能
-        </div>
-      ) : (
-        <SkillGrid
-          mode="plaza"
-          onOpen={onOpen}
-          onUse={onUse}
-          skills={filtered}
-        />
-      )}
-    </>
-  );
-}
-
-function SkillGrid({
-  mode = "mine",
+/**
+ * 技能列表。**行式连接列表**（与「插件」页同构）：一行一个，整块一个边框、行间分隔线。
+ *
+ * 不用卡片网格：技能是「一条条能力」，不是「一件件商品」——
+ * 行式列表能一屏看更多、名字左对齐好扫，也和插件页视觉一致。
+ */
+function SkillList({
+  groups = [],
+  onMove,
   onOpen,
   onToggle,
   onUninstall,
   onUse,
+  readOnly = false,
   skills,
 }: {
-  mode?: "mine" | "plaza";
+  groups?: Group[];
+  /** 只读：插件带来的技能随插件启停，不可单独开关（T53 / T106 §5.2）。 */
+  readOnly?: boolean;
+  onMove?: (skill: Skill, groupId: string | null) => void | Promise<void>;
   onOpen: (skillId: string) => void;
   onToggle?: (skill: Skill) => void | Promise<void>;
   onUninstall?: (skill: Skill) => void | Promise<void>;
   onUse: (skillName: string) => void;
   skills: Skill[];
 }) {
-  const plazaGridClass = "grid grid-cols-1 items-start gap-3 sm:grid-cols-2 lg:grid-cols-3";
-  const mineGridClass = "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3";
-
   return (
-    <div className={mode === "plaza" ? plazaGridClass : mineGridClass}>
-      {skills.map((skill) => (
-        <SkillCard
+    <ul className="overflow-hidden rounded-lg border border-border-subtle bg-surface">
+      {skills.map((skill, index) => (
+        <SkillRow
+          groups={groups}
           key={skill.id}
-          mode={mode}
+          last={index === skills.length - 1}
+          onMove={onMove}
           onOpen={onOpen}
           onToggle={onToggle}
           onUninstall={onUninstall}
           onUse={onUse}
+          readOnly={readOnly}
           skill={skill}
         />
       ))}
-    </div>
+    </ul>
   );
 }
 
-function SkillCard({
-  mode,
+function SkillRow({
+  groups,
+  last,
+  onMove,
   onOpen,
   onToggle,
   onUninstall,
   onUse,
+  readOnly = false,
   skill,
 }: {
-  mode: "mine" | "plaza";
+  groups: Group[];
+  last: boolean;
+  readOnly?: boolean;
+  onMove?: (skill: Skill, groupId: string | null) => void | Promise<void>;
   onOpen: (skillId: string) => void;
   onToggle?: (skill: Skill) => void | Promise<void>;
   onUninstall?: (skill: Skill) => void | Promise<void>;
@@ -277,100 +329,161 @@ function SkillCard({
   skill: Skill;
 }) {
   const Icon = skillIcon(skill);
-  const sourceLabel = skill.source === "builtin" ? "内置" : "用户安装";
-  const plazaCardClass =
-    "group flex flex-col rounded-xl border border-border-subtle bg-surface p-3 transition hover:border-border";
-  const mineCardClass =
-    "group flex min-h-[168px] flex-col rounded-xl border border-border-subtle bg-surface p-4 transition hover:border-border";
-  const plazaIconClass =
-    "grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-background shadow-sm transition-colors";
-  const mineIconClass =
-    "grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-border bg-background shadow-sm transition-colors";
-  const plazaDescriptionClass = "mt-2 line-clamp-2 text-xs leading-5 text-foreground-secondary";
-  const mineDescriptionClass = "mt-2 line-clamp-2 text-xs leading-5 text-foreground-secondary";
 
   return (
-    <div className={mode === "plaza" ? plazaCardClass : mineCardClass}>
-      <div className={mode === "plaza" ? "flex items-start gap-2.5" : "flex items-start gap-3"}>
-        <div
-          className={`${mode === "plaza" ? plazaIconClass : mineIconClass} ${
-            skill.enabled ? "text-primary" : "text-foreground-muted"
-          }`}
-        >
-          <Icon className={mode === "plaza" ? "h-4 w-4" : "h-5 w-5"} aria-hidden="true" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onOpen(skill.id)}
-              className="min-w-0 flex-1 text-left"
-            >
-              <p className="truncate font-semibold text-foreground">{skill.name}</p>
-            </button>
-            {/* plaza action */}
-            {mode === "plaza" && skill.userInvocable && (
-              <button
-                type="button"
-                onClick={() => onUse(skill.name)}
-                className="pointer-events-none inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground opacity-0 transition hover:opacity-90 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-                使用
-              </button>
-            )}
-          </div>
-          <p className="truncate text-xs text-foreground-muted">
-            {sourceLabel}
-            {skill.userInvocable ? " · 可调用" : ""}
-          </p>
-        </div>
+    <li
+      className={`group flex items-center gap-3.5 px-4 py-4 transition-colors hover:bg-primary/5 ${
+        last ? "" : "border-b border-border-subtle"
+      }`}
+    >
+      <div
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-border bg-background shadow-sm transition-colors ${
+          skill.enabled ? "text-primary" : "text-foreground-muted"
+        }`}
+      >
+        <Icon className="h-5 w-5" aria-hidden="true" />
       </div>
 
-      <button
-        type="button"
-        onClick={() => onOpen(skill.id)}
-        className={mode === "plaza" ? "text-left" : "min-h-[42px] text-left"}
-      >
-        {skill.description && (
-          <p className={mode === "plaza" ? plazaDescriptionClass : mineDescriptionClass}>
-            {skill.description}
-          </p>
-        )}
-      </button>
-
-      {mode === "mine" && (
-        <div className="mt-auto flex items-center justify-between gap-3 pt-3">
-          <div className="flex items-center gap-2">
-            <Switch checked={skill.enabled} onChange={() => void onToggle?.(skill)} />
-            <span className="text-xs text-foreground-muted">
-              {skill.enabled ? "已启用" : "已停用"}
-            </span>
-          </div>
-          <div className="pointer-events-none flex items-center gap-1 opacity-0 transition group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
-            {skill.userInvocable && (
-              <button
-                type="button"
-                onClick={() => onUse(skill.name)}
-                className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition hover:opacity-90"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-                使用
-              </button>
-            )}
-            {skill.source === "user" && (
-              <button
-                type="button"
-                onClick={() => void onUninstall?.(skill)}
-                className="inline-flex shrink-0 rounded-md px-2 py-1 text-xs text-foreground-muted transition hover:bg-accent hover:text-destructive"
-              >
-                卸载
-              </button>
-            )}
-          </div>
+      {/* 标题行不能整块套一个 <button>：分组下拉本身是按钮，嵌套 button 是非法 HTML
+          （浏览器会把它拆出去，点击行为随之失灵）。故名称与描述各自是可点区域。 */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onOpen(skill.id)}
+            className="min-w-0 truncate text-left font-semibold text-foreground"
+          >
+            {/* plugin 提供的技能显示限定名（`plugin:name`，T108 §6）：装两个都带同名技能的
+                plugin 时，裸名无从区分；模型面用的也是这个名字，两边得对得上。 */}
+            {skill.qualifiedName ?? skill.name}
+          </button>
+          {skill.source === "builtin" && <Badge tone="neutral">内置</Badge>}
+          {skill.userInvocable && <Badge tone="info">可调用</Badge>}
+          {!readOnly && onMove && (
+            <SkillGroupDropdown
+              groups={groups}
+              value={skill.groupId}
+              onChange={(gid) => void onMove(skill, gid)}
+            />
+          )}
         </div>
+        {skill.description && (
+          <button
+            type="button"
+            onClick={() => onOpen(skill.id)}
+            className="block w-full text-left"
+          >
+            <p className="mt-0.5 line-clamp-1 text-xs text-foreground-secondary">
+              {skill.description}
+            </p>
+          </button>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-3">
+        {/* 悬浮才出现：一屏几十行，常显的话按钮比内容还抢眼。 */}
+        <div className="pointer-events-none flex items-center gap-1 opacity-0 transition group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+          {skill.userInvocable && (
+            <button
+              type="button"
+              onClick={() => onUse(skill.name)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+              使用
+            </button>
+          )}
+          {!readOnly && skill.source === "user" && (
+            <button
+              type="button"
+              onClick={() => void onUninstall?.(skill)}
+              className="rounded-md px-2 py-1 text-xs text-foreground-muted transition hover:bg-accent hover:text-destructive"
+            >
+              卸载
+            </button>
+          )}
+        </div>
+
+        {readOnly ? (
+          // 插件带来的技能随插件启停 —— 给的是状态，不是开关，否则用户点了却没反应。
+          <span className="text-xs text-foreground-muted">
+            {skill.enabled ? "已启用" : "已停用"} · 随插件
+          </span>
+        ) : (
+          <Switch checked={skill.enabled} onChange={() => void onToggle?.(skill)} />
+        )}
+      </div>
+    </li>
+  );
+}
+
+
+function SkillGroupDropdown({
+  groups,
+  onChange,
+  value,
+}: {
+  groups: Group[];
+  onChange: (groupId: string | null) => void;
+  value?: string | null;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState<DropdownMenuAnchor | null>(null);
+  const selectedGroup = groups.find((group) => group.id === value);
+  const label = selectedGroup?.name ?? "未分组";
+  const items: DropdownMenuEntry[] = [
+    {
+      id: "__ungrouped__",
+      icon: Folder,
+      label: "未分组",
+      selected: !value,
+      onSelect: () => onChange(null),
+    },
+    ...groups.map((group): DropdownMenuEntry => ({
+      id: group.id,
+      icon: Folder,
+      label: group.name,
+      selected: group.id === value,
+      onSelect: () => onChange(group.id),
+    })),
+  ];
+
+  function toggleMenu() {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setAnchorRect({ bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top });
+    setOpen((current) => !current);
+  }
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="inline-flex max-w-[132px] shrink-0 rounded-full text-xs outline-none transition hover:opacity-85 focus:ring-1 focus:ring-ring"
+        onClick={(event) => {
+          event.stopPropagation();
+          toggleMenu();
+        }}
+      >
+        <Badge tone={selectedGroup ? "info" : "neutral"} className="inline-flex max-w-full min-w-0 items-center gap-1">
+          <span className="min-w-0 truncate">{label}</span>
+          <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
+        </Badge>
+      </button>
+      {open && (
+        <DropdownMenu
+          align="start"
+          anchorElement={triggerRef.current}
+          anchorRect={anchorRect}
+          items={items}
+          onClose={() => setOpen(false)}
+          placement="bottom"
+          width={168}
+        />
       )}
-    </div>
+    </>
   );
 }
 

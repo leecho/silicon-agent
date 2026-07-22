@@ -12,6 +12,14 @@ pub enum ModelMessageRole {
     Tool,
 }
 
+/// 发送给多模态模型的图片（base64）。`media_type` 形如 `image/png`。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelImage {
+    pub media_type: String,
+    pub base64_data: String,
+}
+
 /// 发送给模型的一条归一化消息。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +30,9 @@ pub struct ModelMessage {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ModelToolCall>>,
+    /// 随本条消息发送的图片（仅多模态模型；空则 content 按字符串发送）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ModelImage>,
 }
 
 /// Assistant 消息中的工具调用引用。
@@ -40,6 +51,7 @@ impl ModelMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls: None,
+            images: Vec::new(),
         }
     }
 
@@ -49,6 +61,7 @@ impl ModelMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls: None,
+            images: Vec::new(),
         }
     }
 
@@ -58,6 +71,7 @@ impl ModelMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls: None,
+            images: Vec::new(),
         }
     }
 
@@ -75,6 +89,7 @@ impl ModelMessage {
                 name: name.into(),
                 arguments_json: arguments_json.into(),
             }]),
+            images: Vec::new(),
         }
     }
 
@@ -84,6 +99,7 @@ impl ModelMessage {
             content: content.into(),
             tool_call_id: Some(tool_call_id.into()),
             tool_calls: None,
+            images: Vec::new(),
         }
     }
 
@@ -94,6 +110,7 @@ impl ModelMessage {
             content: String::new(),
             tool_call_id: None,
             tool_calls: Some(calls),
+            images: Vec::new(),
         }
     }
 }

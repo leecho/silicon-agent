@@ -5,7 +5,7 @@
 //! `<p class="b_lineclamp2">摘要</p>`。下面样本含两条结果，标题/摘要里故意带 HTML 标签
 //! (`<strong>`) 与实体 (`&amp; &#39;`) 以验证清洗逻辑。
 
-use silicon_agent::tools::web_search::{
+use silicon_worker::tools::web_search::{
     parse_bing_results, percent_decode, percent_encode, strip_tags, unescape_html,
 };
 

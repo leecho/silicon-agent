@@ -10,10 +10,10 @@ export interface SidebarLayoutState {
 }
 
 export const SIDEBAR_TITLEBAR_ACTIONS_CLASS_NAME =
-  "absolute right-3 top-1 z-20 flex h-8 items-center gap-1";
+  "absolute right-3 top-2.5 z-20 flex h-8 items-center gap-1";
 
 export const COLLAPSED_SIDEBAR_TITLEBAR_ACTIONS_CLASS_NAME =
-  "absolute left-[var(--titlebar-collapsed-actions-left)] top-1 z-20 flex h-8 items-center gap-0.5";
+  "absolute left-[var(--titlebar-collapsed-actions-left)] top-2.5 z-20 flex h-8 items-center gap-0.5";
 
 export const SIDEBAR_TITLEBAR_BUTTON_CLASS_NAME =
   "grid h-8 w-8 shrink-0 place-items-center rounded-md text-foreground-secondary transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35";
@@ -25,7 +25,9 @@ export interface TitlebarLayoutState {
   collapsedContentInsetFallback: string;
 }
 
-export function getTitlebarLayoutState(platform: AppPlatform): TitlebarLayoutState {
+export function getTitlebarLayoutState(
+  platform: AppPlatform,
+): TitlebarLayoutState {
   const leftWindowControlSafeArea = platform === "macos" ? 90 : 12;
 
   return {

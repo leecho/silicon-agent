@@ -142,6 +142,34 @@ pub fn list_remote_bindings(services: State<'_, AppState>) -> Result<Vec<RemoteB
     services.remote_store.list_all_bindings()
 }
 
+/// 切换某个远程联系人后续消息进入的本地会话。
+#[tauri::command]
+pub fn switch_remote_binding_session(
+    services: State<'_, AppState>,
+    channel: String,
+    peer_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    if channel.trim().is_empty() || peer_id.trim().is_empty() || session_id.trim().is_empty() {
+        return Err("请选择要切换的会话".into());
+    }
+    let target_session_id = session_id.trim();
+    let target = services
+        .session
+        .get_session(target_session_id)?
+        .ok_or_else(|| "会话不存在".to_string())?;
+    if target.is_draft {
+        return Err("不能切换到草稿会话".into());
+    }
+    let now = crate::app_state::now_string();
+    services.remote_store.switch_binding_session(
+        channel.trim(),
+        peer_id.trim(),
+        target_session_id,
+        &now,
+    )
+}
+
 /// 发起微信扫码配对：返回二维码（前端展示），后台轮询并发 `remote_pairing_event`；
 /// confirmed 自动存 token、enable、起 connector，无需手填 token。
 #[tauri::command]

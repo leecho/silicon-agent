@@ -20,6 +20,8 @@ pub struct TrayEntitySplit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayMenuSnapshot {
+    pub projects: TrayEntitySplit,
+    pub agents: TrayEntitySplit,
     pub sessions: TrayEntitySplit,
 }
 
@@ -37,7 +39,17 @@ pub enum TrayAction {
     NewTask,
     ShowMainWindow,
     Quit,
+    OpenProject(String),
+    OpenAgent(String),
     OpenSession(String),
+}
+
+pub fn project_item_id(id: &str) -> String {
+    format!("tray:open-project:{id}")
+}
+
+pub fn agent_item_id(id: &str) -> String {
+    format!("tray:open-agent:{id}")
 }
 
 pub fn session_item_id(id: &str) -> String {
@@ -99,6 +111,12 @@ pub fn parse_tray_item_id(id: &str) -> Option<TrayAction> {
     }
     if id == TRAY_QUIT_ID {
         return Some(TrayAction::Quit);
+    }
+    if let Some(rest) = id.strip_prefix("tray:open-project:") {
+        return Some(TrayAction::OpenProject(rest.to_string()));
+    }
+    if let Some(rest) = id.strip_prefix("tray:open-agent:") {
+        return Some(TrayAction::OpenAgent(rest.to_string()));
     }
     if let Some(rest) = id.strip_prefix("tray:open-session:") {
         return Some(TrayAction::OpenSession(rest.to_string()));
@@ -167,6 +185,14 @@ mod tests {
 
     #[test]
     fn parses_open_item_ids_and_rejects_unknown_ids() {
+        assert_eq!(
+            parse_tray_item_id("tray:open-project:project-1"),
+            Some(TrayAction::OpenProject("project-1".to_string())),
+        );
+        assert_eq!(
+            parse_tray_item_id("tray:open-agent:agent-1"),
+            Some(TrayAction::OpenAgent("agent-1".to_string())),
+        );
         assert_eq!(
             parse_tray_item_id("tray:open-session:session-1"),
             Some(TrayAction::OpenSession("session-1".to_string())),

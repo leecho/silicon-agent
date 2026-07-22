@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 
 // ---------------------------------------------------------------------------
 // Minimal echo client (mirrors engine_single_turn.rs)
@@ -22,6 +22,7 @@ impl ModelClient for EchoClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         on_event(ModelEvent::Delta {

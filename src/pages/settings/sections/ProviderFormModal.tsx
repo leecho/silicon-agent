@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Modal, ModalHeader, Button, ButtonGroup } from "../../../components/ui";
+import { Modal, ModalHeader, Button, ButtonGroup, Select } from "../../../components/ui";
 import { TextField } from "../../../components/ui/Field";
-import type { Provider, ProviderInput } from "../../../types";
+import type { Provider, ProviderInput, ProviderProtocol } from "../../../types";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 /**
@@ -37,12 +37,15 @@ export function ProviderForm({
   onSubmit,
 }: {
   initial: Provider | null;
-  initialValues?: { name: string; baseUrl: string };
+  initialValues?: { name: string; baseUrl: string; protocol?: ProviderProtocol };
   onCancel?: () => void;
   onSubmit: (input: ProviderInput) => Promise<void>;
 }) {
   const [name, setName] = useState(initial?.name ?? initialValues?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? initialValues?.baseUrl ?? "");
+  const [protocol, setProtocol] = useState<ProviderProtocol>(
+    initial?.protocol ?? initialValues?.protocol ?? "openai",
+  );
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +61,7 @@ export function ProviderForm({
         baseUrl,
         apiKey: apiKey === "" ? null : apiKey,
         enabled: initial?.enabled ?? true,
+        protocol,
       });
       onCancel?.();
     } catch (err) {
@@ -81,9 +85,11 @@ export function ProviderForm({
                   if (p.key !== "custom") {
                     setName(p.name);
                     setBaseUrl(p.baseUrl);
+                    setProtocol(p.protocol);
                   } else {
                     setName("");
                     setBaseUrl("");
+                    setProtocol("openai");
                   }
                 }}
               >
@@ -99,6 +105,21 @@ export function ProviderForm({
           onChange={setBaseUrl}
           placeholder="https://api.deepseek.com/v1"
         />
+        <label className="flex flex-col gap-1">
+          <span className="text-sm font-medium text-foreground">协议</span>
+          <Select
+            className="w-full"
+            value={protocol}
+            onChange={(value) => setProtocol(value as ProviderProtocol)}
+            options={[
+              { value: "openai", label: "OpenAI 兼容" },
+              { value: "anthropic", label: "Anthropic（Claude 原生）" },
+            ]}
+          />
+          <span className="text-xs text-foreground-secondary">
+            Anthropic 使用原生 Messages API（/v1/messages、x-api-key）。
+          </span>
+        </label>
         <TextField
           label="API Key"
           description={

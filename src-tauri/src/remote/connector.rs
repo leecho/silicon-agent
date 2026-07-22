@@ -1,5 +1,5 @@
 //! 平台无关的连接器边界。RemoteHub/Router 只依赖本 trait 与归一化类型，
-//! 平台细节封死在 channels/**。trait 同步（ureq 阻塞），跑专用线程。
+//! 平台细节封死在 channels/**。trait 同步（HttpClient 同步门面），跑专用线程。
 
 /// 入站消息（已归一化）。
 #[derive(Debug, Clone, PartialEq, Eq)]

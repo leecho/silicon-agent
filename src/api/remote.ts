@@ -57,6 +57,14 @@ export async function listRemoteBindings(): Promise<RemoteBinding[]> {
   return await invoke<RemoteBinding[]>("list_remote_bindings");
 }
 
+export async function switchRemoteBindingSession(
+  channel: string,
+  peerId: string,
+  sessionId: string,
+): Promise<void> {
+  await invoke("switch_remote_binding_session", { channel, peerId, sessionId });
+}
+
 export async function removeRemotePeer(channel: string, peerId: string): Promise<void> {
   await invoke("remove_remote_peer", { channel, peerId });
 }

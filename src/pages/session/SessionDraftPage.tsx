@@ -6,26 +6,37 @@ import {
   getGlobalPermissionMode,
   getRecentWorkspaces,
   getSession,
+  listActiveTeams,
+  listAgents,
+  listExperts,
   listEnabledModels,
+  listProjects,
   pickDirectory,
   pickFile,
   saveAttachment,
   setDraftContent,
   setSessionAgent,
+  setSessionRole,
   setSessionMode,
   setSessionModel,
   setSessionPermissionMode,
   setSessionWorkspace,
+  submitProjectDraftMessage,
   submitUserMessage,
 } from "../../api";
 import type {
+  Agent,
+  ExpertSummary,
+  Team,
   EnabledProviderModels,
   PermissionMode,
+  Project,
   SessionInfo,
 } from "../../types";
 import { Composer } from "../../components/session/Composer";
 import { useSession } from "../../components/session/SessionProvider";
 import { useNotifications } from "../../components/ui/NotificationProvider";
+import { PopularExpertsBar } from "./PopularExpertsBar";
 import {
   extractAttachments,
   type Attachment,
@@ -71,6 +82,11 @@ export function SessionDraftPage() {
     attachments: Attachment[];
   } | null>(draftToOpen ? null : { content: draftSeedContent ?? "", attachments: [] });
   const [modelGroups, setModelGroups] = useState<EnabledProviderModels[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [roleExperts, setRoleExperts] = useState<ExpertSummary[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(draftSeedProjectId);
   const [draftAgentId, setDraftAgentId] = useState<string | null>(draftSeedAgentId);
   const [draftSelectedModelId, setDraftSelectedModelId] = useState<string | null>(null);
   const [draftPermissionMode, setDraftPermissionMode] = useState<PermissionMode | null>(null);
@@ -81,9 +97,17 @@ export function SessionDraftPage() {
   // 加载启用模型 / 全局权限 / 最近目录（供草稿页下拉）。
   useEffect(() => {
     listEnabledModels().then(setModelGroups).catch(console.error);
+    listActiveTeams().then(setTeams).catch(console.error);
+    listExperts().then(setRoleExperts).catch(console.error);
+    listAgents().then(setAgents).catch(console.error);
+    listProjects().then(setProjects).catch(console.error);
     getGlobalPermissionMode().then(setGlobalPermMode).catch(console.error);
     getRecentWorkspaces().then(setRecents).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    setDraftProjectId(draftSeedProjectId);
+  }, [draftSeedProjectId]);
 
   useEffect(() => {
     setDraftAgentId(draftSeedAgentId);
@@ -198,6 +222,10 @@ export function SessionDraftPage() {
   };
 
   const pickModel = async (modelId: string | null) => {
+    if (draftProjectId && !sessionIdRef.current) {
+      setDraftSelectedModelId(modelId);
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) return;
     try {
@@ -209,7 +237,38 @@ export function SessionDraftPage() {
     }
   };
 
+  const pickRole = async (kind: string, id: string) => {
+    const sid = await ensureDraftSession();
+    if (!sid) return;
+    try {
+      await setSessionRole(sid, kind, id);
+      setDraftSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              roleKind: (kind || null) as "expert" | "team" | null,
+              roleId: id || null,
+            }
+          : prev,
+      );
+    } catch (err) {
+      console.error(err);
+      notify.error("设置角色失败：" + String(err));
+    }
+  };
+
+  // 「使用专家/团队」入口：进入草稿后用预选角色激活一次（建草稿会话 + 设角色 + 同步下拉）。
+  const seedRoleAppliedRef = useRef(false);
+  useEffect(() => {
+    if (draftSeedRole && !seedRoleAppliedRef.current) {
+      seedRoleAppliedRef.current = true;
+      void pickRole(draftSeedRole.kind, draftSeedRole.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftSeedRole]);
+
   const pickAgent = async (id: string) => {
+    if (id) setDraftProjectId(null);
     setDraftAgentId(id || null);
     const sid = await ensureDraftSession();
     if (!sid) return;
@@ -234,6 +293,10 @@ export function SessionDraftPage() {
   }, [draftSeedAgentId]);
 
   const switchPermissionMode = async (mode: PermissionMode | null) => {
+    if (draftProjectId && !sessionIdRef.current) {
+      setDraftPermissionMode(mode);
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) return;
     try {
@@ -246,6 +309,10 @@ export function SessionDraftPage() {
   };
 
   const togglePlan = async () => {
+    if (draftProjectId && !sessionIdRef.current) {
+      setDraftModeValue((current) => (current === "plan" ? "normal" : "plan"));
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) return;
     const cur = draftSession?.mode === "plan" ? "normal" : "plan";
@@ -274,6 +341,7 @@ export function SessionDraftPage() {
   const pickWorkspace = async () => {
     const dir = await pickDirectory();
     if (!dir) return;
+    setDraftProjectId(null);
     const id = await ensureDraftSession();
     if (!id) return;
     await clearAgentContext(id);
@@ -289,6 +357,7 @@ export function SessionDraftPage() {
   };
 
   const pickRecent = async (path: string) => {
+    setDraftProjectId(null);
     const id = await ensureDraftSession();
     if (!id) return;
     await clearAgentContext(id);
@@ -304,6 +373,28 @@ export function SessionDraftPage() {
 
   const onSubmit = async (text: string): Promise<void> => {
     if (!text.trim()) return;
+    if (draftProjectId) {
+      submittedRef.current = true;
+      try {
+        const projectSessionId = await submitProjectDraftMessage({
+          projectId: draftProjectId,
+          content: text,
+          sourceDraftSessionId: sessionIdRef.current,
+          mode: (draftSession?.mode ?? draftModeValue) === "plan" ? "plan" : null,
+          permissionMode: draftSession?.permissionMode ?? draftPermissionMode,
+          selectedModelId: draftSession?.selectedModelId ?? draftSelectedModelId,
+        });
+        openSession(projectSessionId);
+      } catch (err) {
+        console.error(err);
+        notify.error("发送失败：" + String(err));
+        submittedRef.current = false;
+        throw err;
+      } finally {
+        refreshSessions();
+      }
+      return;
+    }
     const id = await ensureDraftSession();
     if (!id) throw new Error("创建草稿失败");
     submittedRef.current = true; // 卸载时不再当草稿保存。
@@ -325,7 +416,14 @@ export function SessionDraftPage() {
   const effectiveMode = draftSession?.mode ?? draftModeValue;
   const effectivePermissionMode = draftSession?.permissionMode ?? draftPermissionMode;
   const effectiveSelectedModelId = draftSession?.selectedModelId ?? draftSelectedModelId;
-  const selectedAgentId = draftSession?.agentId ?? draftAgentId ?? null;
+  // 角色：草稿会话存在后只认它的 role（清除后即 ""，不再回退种子角色）；种子角色仅在会话未建时作初值。
+  const sessionRoleKind = draftSession ? (draftSession.roleKind ?? "") : (draftSeedRole?.kind ?? "");
+  const sessionRoleId = draftSession ? (draftSession.roleId ?? "") : (draftSeedRole?.id ?? "");
+  const effectiveRoleKind = draftProjectId ? "" : sessionRoleKind;
+  const effectiveRoleId = draftProjectId ? "" : sessionRoleId;
+  const selectedAgentId = draftProjectId
+    ? null
+    : (draftSession?.agentId ?? draftAgentId ?? null);
 
   // 等待打开的草稿注水完成。
   if (draftToOpen && initial === null) {
@@ -342,10 +440,20 @@ export function SessionDraftPage() {
           本地运行、自主规划、安全可控的 AI 工作搭子
         </p>
         <div className="min-w-[720px] max-w-[720px]">
+          {!draftProjectId && (
+            <PopularExpertsBar
+              agents={roleExperts}
+              roleKind={effectiveRoleKind}
+              roleId={effectiveRoleId}
+              seedRole={draftSeedRole}
+              onPickExpert={(expertId) => void pickRole("expert", expertId)}
+            />
+          )}
           <Composer
             sessionId={sessionIdRef.current ?? ""}
             disabled={false}
             onSubmit={onSubmit}
+            onEnsureSessionId={ensureDraftSession}
             initialContent={initial?.content || undefined}
             initialAttachments={
               initial && initial.attachments.length > 0 ? initial.attachments : undefined
@@ -355,6 +463,17 @@ export function SessionDraftPage() {
             }}
             onAttachFile={onAttachFile}
             onPasteFile={onPasteFile}
+            projects={projects}
+            selectedProjectId={draftProjectId}
+            onPickProject={(projectId) => {
+              // 选项目：与「智能体」上下文互斥——清掉智能体角色。
+              setDraftProjectId(projectId);
+              void (async () => {
+                const sid = sessionIdRef.current;
+                if (sid) await clearAgentContext(sid);
+              })();
+            }}
+            agents={agents}
             selectedAgentId={selectedAgentId}
             onPickAgent={(id) => {
               void pickAgent(id);
@@ -367,6 +486,11 @@ export function SessionDraftPage() {
             modelGroups={modelGroups}
             selectedModelId={effectiveSelectedModelId}
             onPickModel={(id) => void pickModel(id)}
+            teams={teams}
+            roleExperts={roleExperts}
+            roleKind={effectiveRoleKind}
+            roleId={effectiveRoleId}
+            onPickRole={(draftProjectId || selectedAgentId) ? undefined : (k, i) => void pickRole(k, i)}
             planMode={effectiveMode === "plan"}
             onTogglePlan={() => void togglePlan()}
             permissionMode={effectivePermissionMode}

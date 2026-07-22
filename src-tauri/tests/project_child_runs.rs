@@ -1,7 +1,7 @@
 // T59 P2 Task1：任务看板投影的数据源——项目线程 + 其下 child 运行的聚合关系。
 // （list_project_child_runs 依赖 AppState，状态映射靠 session_children 既有测试；此处回归 store 聚合源。）
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 use std::sync::Arc;
 
 fn store() -> SessionStore {

@@ -7,15 +7,15 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::{Engine, PendingInteraction};
-use silicon_agent::provider::client::{
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::{Engine, PendingInteraction};
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::{new_id, PendingPlan, SessionStore};
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::propose_plan::ProposePlan;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::{new_id, PendingPlan, SessionStore};
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::propose_plan::ProposePlan;
+use silicon_worker::tools::ToolRegistry;
 
 /// 两轮 mock：第一轮请求 propose_plan（带 title + plan_markdown），第二轮给最终答案。
 /// 镜像真实 provider 流式：live ToolCallCreated 的 args 为空，完整 args 在最终 result.events。
@@ -27,6 +27,7 @@ impl ModelClient for PlanClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);

@@ -26,6 +26,7 @@ impl ToolRegistry {
     }
 
     /// 子集 registry：仅保留白名单内、且本 registry 已注册的工具（按 Arc 复用，不重建工具实例）。
+    /// 供 child（子运行）按 agent 工具白名单构造受限工具集。
     pub fn filter_by_names(&self, names: &[String]) -> ToolRegistry {
         let mut out = ToolRegistry::new();
         for n in names {
@@ -36,7 +37,7 @@ impl ToolRegistry {
         out
     }
 
-    /// 复制本 registry，但排除指定名字的工具。
+    /// 复制本 registry，但排除指定名字的工具。供「未声明 tools→全部开放」时仍剔除 dispatch_agent（禁递归）。
     pub fn without_name(&self, exclude: &str) -> ToolRegistry {
         let mut out = ToolRegistry::new();
         for (n, t) in &self.tools {
@@ -54,69 +55,16 @@ impl ToolRegistry {
         Ok(cap_result(&out, 8000))
     }
 
-    /// 批量执行一回合的工具调用。
-    ///
-    /// 入参 `(tool_call_id, name, args)`，出参 `(tool_call_id, name, result_text)`，
-    /// 顺序与入参对齐。连续的并发安全工具用线程并行，其余串行。
-    /// 工具 Err / 未知工具一律转成结果文本（不 panic、不中断），每条结果过 `cap_result`。
-    pub fn execute_batch(
+    /// 同 execute，但把 run 级取消标记穿入工具（进程类工具据此 kill 子进程）。
+    pub fn execute_cancellable(
         &self,
-        calls: &[(String, String, serde_json::Value)],
-    ) -> Vec<(String, String, String)> {
-        let mut results: Vec<(String, String, String)> = Vec::with_capacity(calls.len());
-        let mut i = 0;
-        while i < calls.len() {
-            let safe = self
-                .get(&calls[i].1)
-                .map(|t| t.concurrency_safe())
-                .unwrap_or(false);
-            if safe {
-                // 收集一段连续的并发安全工具，线程并行执行。
-                let mut j = i;
-                while j < calls.len()
-                    && self
-                        .get(&calls[j].1)
-                        .map(|t| t.concurrency_safe())
-                        .unwrap_or(false)
-                {
-                    j += 1;
-                }
-                let mut handles = Vec::new();
-                for call in &calls[i..j] {
-                    let registry = self.clone();
-                    let (id, name, args) = (call.0.clone(), call.1.clone(), call.2.clone());
-                    handles.push(std::thread::spawn(move || {
-                        let result = run_one(&registry, &name, &args);
-                        (id, name, result)
-                    }));
-                }
-                for handle in handles {
-                    match handle.join() {
-                        Ok(triple) => results.push(triple),
-                        Err(_) => results.push((
-                            String::new(),
-                            String::new(),
-                            "工具执行失败: 线程 panic".to_string(),
-                        )),
-                    }
-                }
-                i = j;
-            } else {
-                let (id, name, args) = &calls[i];
-                let result = run_one(self, name, args);
-                results.push((id.clone(), name.clone(), result));
-                i += 1;
-            }
-        }
-        results
-    }
-}
-
-/// 执行单个工具，Err 转结果文本，结果过 `cap_result`。
-fn run_one(registry: &ToolRegistry, name: &str, args: &serde_json::Value) -> String {
-    match registry.execute(name, args) {
-        Ok(text) => text,
-        Err(err) => cap_result(&format!("工具执行失败: {err}"), 8000),
+        name: &str,
+        args: &serde_json::Value,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, String> {
+        let tool = self.get(name).ok_or_else(|| format!("未知工具: {name}"))?;
+        let out = tool.execute_cancellable(args, cancel)?;
+        Ok(cap_result(&out, 8000))
     }
 }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use silicon_agent::provider::{ModelInput, ProviderGateway, ProviderInput, ProviderStore};
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::provider::{ModelInput, ProviderGateway, ProviderInput, ProviderStore};
+use silicon_worker::storage::AppDatabase;
 
 /// 每次测试用独立临时目录，避免数据库/secret 文件互相污染。
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -12,7 +12,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
         .unwrap_or_default()
         .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "silicon-agent-{tag}_{}_{}_{nanos}",
+        "silicon-worker-{tag}_{}_{}_{nanos}",
         std::process::id(),
         seq,
     ));
@@ -38,6 +38,7 @@ fn upsert_provider_round_trips_through_list() {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("sk-plain-secret-1234".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "2026-06-05T00:00:00Z",
         )
@@ -72,6 +73,7 @@ fn provider_view_never_exposes_plaintext_api_key() {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("sk-plain-secret-1234".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "2026-06-05T00:00:00Z",
         )
@@ -90,7 +92,7 @@ fn provider_view_never_exposes_plaintext_api_key() {
 
 #[test]
 fn fallback_model_returns_configured_backup() {
-    use silicon_agent::provider::ModelClient;
+    use silicon_worker::provider::ModelClient;
     let dir = temp_dir("gateway-fallback");
     let store = open_store(&dir);
     let gateway = ProviderGateway::new(store.clone());
@@ -105,6 +107,7 @@ fn fallback_model_returns_configured_backup() {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("sk-plain-secret-1234".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "2026-06-05T00:00:00Z",
         )
@@ -118,6 +121,7 @@ fn fallback_model_returns_configured_backup() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "2026-06-05T00:00:00Z",
         )
@@ -135,7 +139,7 @@ fn fallback_model_returns_configured_backup() {
 
 #[test]
 fn active_model_provider_reflects_default_model() {
-    use silicon_agent::provider::client::ModelClient;
+    use silicon_worker::provider::client::ModelClient;
     let dir = temp_dir("gateway-active-model");
     let store = open_store(&dir);
     let gateway = ProviderGateway::new(store.clone());
@@ -147,6 +151,7 @@ fn active_model_provider_reflects_default_model() {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("sk-plain-secret-1234".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "100",
         )
@@ -160,6 +165,7 @@ fn active_model_provider_reflects_default_model() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "100",
         )

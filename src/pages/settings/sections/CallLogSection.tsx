@@ -187,7 +187,7 @@ export function CallLogSection() {
               {rows.map((row) => (
                 <tr
                   key={row.id}
-                  className="cursor-pointer border-b border-border-subtle/60 hover:bg-accent"
+                  className="cursor-pointer border-b border-border-subtle hover:bg-accent"
                   onClick={() => void openDetail(row.id)}
                 >
                   <td className="px-3 py-2 text-foreground-secondary">

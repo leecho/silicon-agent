@@ -1,13 +1,13 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::provider::message::ModelMessage;
-use silicon_agent::session::SessionStore;
-use silicon_agent::storage::AppDatabase;
+use silicon_worker::provider::message::ModelMessage;
+use silicon_worker::session::SessionStore;
+use silicon_worker::storage::AppDatabase;
 
 fn temp_db() -> Arc<AppDatabase> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -124,6 +124,7 @@ impl ModelClient for RecordingClient {
     fn stream_model_with_events(
         &self,
         request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         *self.last_messages.lock().unwrap() = request.messages.clone();

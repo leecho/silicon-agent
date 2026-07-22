@@ -5,19 +5,19 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use silicon_agent::context::prompt::{system_prompt, Persona};
-use silicon_agent::engine::event::AgentStreamEvent;
-use silicon_agent::engine::Engine;
-use silicon_agent::provider::client::{
+use silicon_worker::context::prompt::system_prompt;
+use silicon_worker::engine::event::AgentStreamEvent;
+use silicon_worker::engine::Engine;
+use silicon_worker::provider::client::{
     ModelCallRequest, ModelCallResult, ModelClient, ModelEvent, ProviderCallError,
 };
-use silicon_agent::session::SessionStore;
-use silicon_agent::skill::types::SkillSummary;
-use silicon_agent::skill::SkillService;
-use silicon_agent::skill::SkillSource;
-use silicon_agent::storage::AppDatabase;
-use silicon_agent::tools::load_skill::LoadSkill;
-use silicon_agent::tools::ToolRegistry;
+use silicon_worker::session::SessionStore;
+use silicon_worker::skill::types::SkillSummary;
+use silicon_worker::skill::SkillService;
+use silicon_worker::skill::SkillSource;
+use silicon_worker::storage::AppDatabase;
+use silicon_worker::tools::load_skill::LoadSkill;
+use silicon_worker::tools::ToolRegistry;
 
 fn sample_summary() -> SkillSummary {
     SkillSummary {
@@ -28,6 +28,7 @@ fn sample_summary() -> SkillSummary {
         enabled: true,
         installed_at: "100".into(),
         plugin_id: None,
+        qualified_name: None,
         team_id: None,
         user_invocable: true,
         argument_hint: None,
@@ -38,7 +39,19 @@ fn sample_summary() -> SkillSummary {
 #[test]
 fn system_prompt_lists_enabled_skills() {
     let s = sample_summary();
-    let prompt = system_prompt(&Persona::default(), std::slice::from_ref(&s), "normal", "");
+    let prompt = system_prompt(
+        std::slice::from_ref(&s),
+        &[],
+        "",
+        "normal",
+        "",
+        None,
+        None,
+        None,
+        true,
+        false,
+        &[],
+    );
     assert!(prompt.contains("可用技能"));
     assert!(prompt.contains("weather-style"));
     assert!(prompt.contains("天气回答风格"));
@@ -47,7 +60,19 @@ fn system_prompt_lists_enabled_skills() {
 
 #[test]
 fn system_prompt_without_skills_has_no_section() {
-    let prompt = system_prompt(&Persona::default(), &[], "normal", "");
+    let prompt = system_prompt(
+        &[],
+        &[],
+        "",
+        "normal",
+        "",
+        None,
+        None,
+        None,
+        true,
+        false,
+        &[],
+    );
     assert!(!prompt.contains("可用技能"));
 }
 
@@ -59,6 +84,7 @@ impl ModelClient for LoadSkillClient {
     fn stream_model_with_events(
         &self,
         _request: ModelCallRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
         on_event: &mut dyn FnMut(ModelEvent) -> bool,
     ) -> Result<ModelCallResult, ProviderCallError> {
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);

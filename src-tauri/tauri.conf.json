@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SiliconAgent",
+  "productName": "Silicon Worker",
   "version": "0.1.0",
-  "identifier": "com.siliconagent.desktop",
+  "identifier": "com.siliconworker.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,14 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "SiliconAgent",
+        "title": "Silicon Worker",
         "width": 1280,
         "height": 820,
         "minWidth": 980,
         "minHeight": 680,
         "decorations": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 20, "y": 22 },
+        "trafficLightPosition": { "x": 20, "y": 27 },
         "hiddenTitle": true,
         "transparent": true,
         "windowEffects": {
@@ -40,6 +40,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "entitlements.plist"
+    }
   }
 }

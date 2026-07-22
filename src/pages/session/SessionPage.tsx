@@ -1,19 +1,27 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, CirclePlus, CornerDownLeft, PanelRightOpen } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CircleAlert, CirclePlus, CornerDownLeft, FolderTree, Globe, ListChecks, MonitorPlay, PanelRightOpen } from "lucide-react";
 import {
   attachFile,
   cancelAskResponse,
+  cancelChild,
   compactSession,
   getGlobalPermissionMode,
   getRecentWorkspaces,
   getSessionTaskPanelDefaultVisible,
   getShowCompletedProcess,
+  getComputerUseEnabled,
+  getBrowserUseEnabled,
   getSession,
+  findChildSession,
+  listSessionChildren,
   listSessionQueue,
   cancelQueuedTask,
   getSessionContextUsage,
   getSessionUsage,
   listEnabledModels,
+  listMemories,
+  listProjects,
+  listSessionWorkspaceFiles,
   openSessionWorkspace,
   pickDirectory,
   pickFile,
@@ -21,6 +29,10 @@ import {
   saveAttachment,
   setSessionModel,
   setSessionAgent,
+  setSessionRole,
+  listActiveTeams,
+  listAgents,
+  listExperts,
   setSessionMode,
   setSessionPermissionMode,
   setSessionWorkspace,
@@ -35,6 +47,9 @@ import {
 import type {
   Agent,
   AgentStreamEvent,
+  ExpertSummary,
+  Team,
+  ChildAgentSummary,
   QueuedTask,
   Artifact,
   ContextUsageView,
@@ -44,14 +59,21 @@ import type {
   PendingAsk,
   PendingPermission,
   PermissionMode,
+  Project,
   RunActivity,
   Session,
   TodoItem,
   UsageTotals,
 } from "../../types";
 import { Disclosure, MessageFeed, buildPersistedRows } from "../../components/session/MessageFeed";
-import { Composer } from "../../components/session/Composer";
+import {
+  MessageFeedNav,
+  type MessageFeedNavItem,
+} from "../../components/session/MessageFeedNav";
+import { extractAttachments } from "../../lib/attachments";
+import { Composer, type ComposerHandle } from "../../components/session/Composer";
 import { SessionMonitorPanel } from "../../components/session/SessionMonitorPanel";
+import { WorkspaceTab } from "../../components/session/WorkspaceTab";
 import { ArtifactPreviewDrawer } from "../../components/session/ArtifactPreviewDrawer";
 import { SessionAskCard } from "../../components/session/SessionAskCard";
 import { SessionPermissionCard } from "../../components/session/SessionPermissionCard";
@@ -68,6 +90,13 @@ import {
 } from "./slashCommands";
 import { toolActivityLabel } from "../../components/session/toolNarrative";
 import { Button } from "../../components/ui";
+import { ComputerPanel } from "../../components/session/computer/ComputerPanel";
+import { BrowserPanel } from "../../components/session/browser/BrowserPanel";
+import {
+  SessionSidePanel,
+  type SidePanelTab,
+  type SidePanelTabDef,
+} from "../../components/session/SessionSidePanel";
 
 type SessionLoadStatus = "idle" | "loading" | "ready" | "missing" | "error";
 const SESSION_FEED_STICKY_BOTTOM_PX = 80;
@@ -137,6 +166,12 @@ function streamEventKey(e: AgentStreamEvent): string | null {
       e.sequence,
     ]);
   }
+  // sequence=0 但有稳定身份的非流式事件（如 model_retrying「第 X/N 次重试」）：
+  // 用 kind + messageId + text 去重，防双监听/重投递（StrictMode/HMR）导致重复行。
+  // messageId 每次模型调用唯一 → 不同 run 的重试不误并；text 含次数 → 同一 run 各次不误并。
+  if (e.kind === "model_retrying") {
+    return JSON.stringify([e.sessionId, e.messageId, e.kind, e.text ?? ""]);
+  }
   return null;
 }
 
@@ -144,6 +179,16 @@ function isFeedNearBottom(el: HTMLDivElement): boolean {
   return (
     el.scrollHeight - el.scrollTop - el.clientHeight <=
     SESSION_FEED_STICKY_BOTTOM_PX
+  );
+}
+
+/** 功能未开启时，对应 tab 内的引导占位：提示去设置开启。 */
+function FeatureOffHint({ name }: { name: string }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+      <span className="text-sm font-medium text-foreground">「{name}」未开启</span>
+      <span className="text-xs text-foreground-muted">可在「设置」中开启后，在此面板使用。</span>
+    </div>
   );
 }
 
@@ -163,6 +208,9 @@ export function SessionPage() {
     useState<SessionLoadStatus>("idle");
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // L0 乐观停止：点「停止」后立即置真——STOP 键切「停止中」、冻结流式增量渲染，
+  // 不等后端撞检查点。以 run_finished 为权威对账回收（见事件处理）。
+  const [stopping, setStopping] = useState(false);
   // 压缩进行中（仅供压缩按钮转圈；与 busy 区分，避免任何 run 都让按钮转圈）。
   const [compacting, setCompacting] = useState(false);
   // pending 控制权限卡显示，与 busy 解耦：busy 仅表示命令进行中。
@@ -189,9 +237,14 @@ export function SessionPage() {
   const [globalPermMode, setGlobalPermMode] = useState<PermissionMode>("manual");
   // 最近使用的工作目录（全局），供 composer 下拉子菜单展示。
   const [recents, setRecents] = useState<string[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   // 产物列表（随 artifacts_updated 事件实时更新）+ 当前预览的产物。
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
+  // 工作空间文件列表（相对路径）+ 加载/错误态；由 workspace tab 使用，随 tab 激活 / artifacts_updated 重拉。
+  const [wsFiles, setWsFiles] = useState<string[]>([]);
+  const [wsFilesLoading, setWsFilesLoading] = useState(false);
+  const [wsFilesError, setWsFilesError] = useState<string | null>(null);
   const [collapsedMonitorSessionId, setCollapsedMonitorSessionId] = useState<string | null>(null);
   // 一轮结束后的快捷建议（后台生成，事件推送）；发新消息/切会话/新 run 时清空。
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -199,6 +252,9 @@ export function SessionPage() {
   const [runActivity, setRunActivity] = useState<RunActivity | null>(null);
   // 启用模型分组（按厂商），供 Composer 模型下拉。
   const [modelGroups, setModelGroups] = useState<EnabledProviderModels[]>([]);
+  // 可选团队 + 散装 agent（Composer 角色槽）；启动加载一次，窗口聚焦刷新。
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [roleExperts, setRoleExperts] = useState<ExpertSummary[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   // 当前会话上下文窗口占用（供 Composer 的 context meter）；切会话清空，载入/每轮结束后刷新。
   const [contextUsage, setContextUsage] = useState<ContextUsageView | null>(
@@ -207,6 +263,14 @@ export function SessionPage() {
   // 当前会话累计 token 用量（供 Composer 的累计 chip）；与 contextUsage 同步刷新。
   const [sessionUsage, setSessionUsage] = useState<UsageTotals | null>(null);
   const [showCompletedProcess, setShowCompletedProcess] = useState(true);
+  // 「桌面操作」功能总开关（启动加载一次）：决定桌面 tab 内是否提供进入入口。
+  const [computerUseEnabled, setComputerUseEnabled] = useState(false);
+  // 「浏览器操作」功能总开关（全局设置）：决定浏览器 tab 内是否提供进入入口。
+  const [browserUseEnabled, setBrowserUseEnabled] = useState(false);
+  // 右侧任务面板当前 tab：监控 / 浏览器 / 桌面（原三块独立侧栏合并为一块，按 tab 切换）。
+  const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>("monitor");
+  // 自动切换去重：记最近一次因工具活动自动切到的工具行 id，避免重复切 / 打开历史会话误切。
+  const autoSwitchedRowRef = useRef<string | null>(null);
   // 产物按「轮」分组：用 artifact.messageId 在消息时间线上往前找最近的 user 消息作轮根，
   // 供 feed 在每轮末尾汇总「本轮产物」。映射不到轮根的（如刷新前临时态）暂不计入。
   const artifactsByRound = useMemo(() => {
@@ -234,6 +298,7 @@ export function SessionPage() {
   }, [detail?.messages, artifacts]);
   // 显示源：事件增量构建的一个数组，就是渲染输入；完成时不被持久数据整体覆盖。
   // list 保持到达顺序、map 供按 rowKey find-or-create-upsert。
+  const composerRef = useRef<ComposerHandle | null>(null);
   const feedRef = useRef<{ list: FeedRow[]; map: Map<string, FeedRow> }>({
     list: [],
     map: new Map(),
@@ -246,11 +311,75 @@ export function SessionPage() {
   // 用 ref 持有当前 sessionId，事件处理里据此过滤跨会话流（事件带 sessionId）。
   const sessionIdRef = useRef<string | null>(sessionId);
   sessionIdRef.current = sessionId;
+  // 事件回调里读最新 stopping（闭包捕获旧值会漏判），跟随 state 刷新。
+  const stoppingRef = useRef(false);
+  stoppingRef.current = stopping;
   // 当前正在流式输出的 assistant messageId：用于让该行思考块进入「思考中」态。
   const streamingIdRef = useRef<string | null>(null);
   const processedStreamEventKeysRef = useRef<Set<string>>(new Set());
+  // dispatch tool_call id → child 会话 id（从 child 事件的 parentToolCallId/sessionId 累积）。
+  const childByCallRef = useRef<Map<string, string>>(new Map());
+  // 当前会话的专家（child 子运行）列表 + 状态（右侧面板展示）。
+  const [childAgents, setChildAgents] = useState<ChildAgentSummary[]>([]);
   // T70：当前会话任务队列（排队中的用户消息），Composer 上方排队条展示。
   const [queuedTasks, setQueuedTasks] = useState<QueuedTask[]>([]);
+  // agent name → 展示名 映射（来自已解析的 child 列表）：让 feed 派发卡与抽屉标题显示「珀西」而非 image-creator。
+  const agentDisplayNames = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const c of childAgents) {
+      if (c.displayName && c.displayName.trim()) m[c.expertName] = c.displayName;
+    }
+    return m;
+  }, [childAgents]);
+  // 侧边导航项：每条用户消息一项（id + 截断文字）。必须在任何条件 return 之前调用（Hooks 规则）。
+  const feedNavItems = useMemo<MessageFeedNavItem[]>(() => {
+    const clip = (s: string, n: number) =>
+      s.length > n ? s.slice(0, n) + "…" : s;
+    const items: MessageFeedNavItem[] = [];
+    let current: { id: string; title: string; reply: string } | null = null;
+    const flush = () => {
+      if (!current) return;
+      items.push({
+        ...current,
+        artifacts: (artifactsByRound.get(current.id) ?? []).filter(
+          (a) => a.kind !== "working",
+        ),
+      });
+    };
+    for (const r of feedRef.current.list) {
+      if (r.kind === "user") {
+        flush();
+        const { body } = extractAttachments(r.content);
+        const firstLine =
+          body
+            .split(/\r\n|\r|\n/)
+            .map((l) => l.trim())
+            .find(Boolean) ?? "";
+        current = {
+          id: r.id,
+          title: clip(firstLine, 60) || "（空消息）",
+          reply: "",
+        };
+      } else if (
+        r.kind === "assistant" &&
+        current &&
+        r.content.trim().length > 0
+      ) {
+        // 该轮最后一条有内容的 assistant = 最终回复；折叠空白后截断，供卡片 line-clamp 预览。
+        current.reply = clip(r.content.trim().replace(/\s+/g, " "), 200);
+      }
+    }
+    flush();
+    return items;
+  }, [feedVersion, artifactsByRound]);
+  // 各 child 子运行的「当前步骤」（childSessionId → 短句，如「正在搜索网页」），由 child 实时事件累积，
+  // 供专家面板在运行中行展示其正在做什么（仅 running 行显示）。
+  const [childSteps, setChildSteps] = useState<Record<string, string>>({});
+  // 当前并行运行中的专家数（供活动条决策：>1 显示稳定的「N 个专家并行处理中」，避免逐事件切名闪烁）。
+  const runningChildCountRef = useRef(0);
+  runningChildCountRef.current = childAgents.filter(
+    (c) => c.status === "running",
+  ).length;
 
   useLayoutEffect(() => {
     const el = feedScrollRef.current;
@@ -345,6 +474,7 @@ export function SessionPage() {
       setAsk(null);
       setPlan(null);
       setBusy(false);
+      setStopping(false);
       setTodos([]);
       setSuggestions([]);
       setRunActivity(null);
@@ -360,12 +490,16 @@ export function SessionPage() {
     setAsk(null);
     setPlan(null);
     setBusy(false);
+    setStopping(false);
     setDetail(null);
     setSessionLoadStatus("loading");
     setSessionLoadError(null);
     setTodos([]);
     setArtifacts([]);
+    setChildAgents([]);
     setQueuedTasks([]);
+    setChildSteps({});
+    childByCallRef.current.clear();
     setSuggestions([]);
     setRunActivity(null);
     setContextUsage(null);
@@ -400,6 +534,7 @@ export function SessionPage() {
         setPlan(d.pendingPlan ?? null);
         setTodos(d.todos ?? []);
         setArtifacts(d.artifacts ?? []);
+        void listSessionChildren(sessionId).then(setChildAgents).catch(() => {});
         void listSessionQueue(sessionId).then(setQueuedTasks).catch(() => setQueuedTasks([]));
         setSuggestions(d.session.lastSuggestions ?? []);
         setBusy(d.isRunning || isAwaitingSubagent(d));
@@ -428,8 +563,55 @@ export function SessionPage() {
     let un: (() => void) | undefined;
     let cancelled = false;
     subscribeAgentStreamEvents((e: AgentStreamEvent) => {
+      // child 子运行事件：记下 dispatch tool_call → child 会话 id 的映射（供「打开专家」侧栏定位）。
+      // 在跨会话守卫之前，因为 child 事件的 sessionId 是 child、不等于当前会话。
+      if (e.parentSessionId === sessionIdRef.current && e.parentToolCallId) {
+        childByCallRef.current.set(e.parentToolCallId, e.sessionId);
+        // 子代理实时动作：回显到父会话活动条（消除假死），并按 child 记下「当前步骤」供专家面板展示。
+        const member = e.expertName ? `专家「${e.expertName}」` : "专家";
+        let step: string | null = null;
+        if (e.kind === "tool_call") step = toolActivityLabel(e.toolName, e.status);
+        else if (e.kind === "message_delta") step = "正在回复";
+        else if (e.kind === "thinking_delta") step = "正在思考";
+        if (step) {
+          const s = step;
+          const child = e.sessionId;
+          setChildSteps((m) => (m[child] === s ? m : { ...m, [child]: s }));
+          // 多专家并行时活动条用稳定聚合文案，避免逐事件在不同专家名/动作间快速切换（呼吸灯闪烁）；
+          // 仅单个专家在跑时才显示其具体步骤。逐专家实时步骤改到右侧面板各行查看。
+          const runningCount = runningChildCountRef.current;
+          const label =
+            runningCount > 1
+              ? `${runningCount} 个专家并行处理中`
+              : `${member} · ${s}`;
+          setRunActivity((cur) =>
+            cur && cur.label === label
+              ? cur
+              : { label, startedAt: cur?.startedAt ?? Date.now() },
+          );
+        }
+      }
+      // 专家列表/状态刷新：任意 run 起止（含 child run 与父续跑）时重取（低频，状态最终一致）。
+      if (
+        (e.kind === "run_started" || e.kind === "run_finished") &&
+        sessionIdRef.current
+      ) {
+        void listSessionChildren(sessionIdRef.current)
+          .then(setChildAgents)
+          .catch(() => {});
+      }
       // 跨会话守卫：只处理当前会话的事件，避免切换后旧会话的迟到事件串入。
       if (e.sessionId !== sessionIdRef.current) return;
+      // L0 乐观停止：已点停止后，冻结流式增量渲染（避免「已点停止还在吐字」）。
+      // feed 由随后的 run_finished 用 DB 重建对账，不丢数据。
+      if (
+        stoppingRef.current &&
+        (e.kind === "thinking_delta" ||
+          e.kind === "message_delta" ||
+          (e.kind === "tool_call" && e.status === "generating"))
+      ) {
+        return;
+      }
       const eventKey = streamEventKey(e);
       if (eventKey) {
         if (processedStreamEventKeysRef.current.has(eventKey)) return;
@@ -610,6 +792,10 @@ export function SessionPage() {
           setChildPending((cur) => (cur && cur.childId === e.sessionId ? null : cur));
           setChildAsk((cur) => (cur && cur.childId === e.sessionId ? null : cur));
         }
+        // L0 对账：本会话 run 结束 → 清乐观停止态（cancelled/done/failed 皆然）。
+        if (e.kind === "run_finished" && e.sessionId === sessionIdRef.current) {
+          setStopping(false);
+        }
         // 控制事件：以 getSessionDetail 为单一事实源，重新同步 pending/todos/busy。
         // run_finished 时顺带用 DB 重建 feed，弥合刷新窗口丢失的 delta。
         const sid = e.sessionId;
@@ -685,7 +871,21 @@ export function SessionPage() {
         }
         case "/stop": {
           if (!detail) break;
+          setStopping(true); // 乐观：立即进入「停止中」
           await stopSession(detail.session.id);
+          break;
+        }
+        case "/memory": {
+          const mems = await listMemories();
+          const content = mems.length
+            ? "## 长期记忆\n" + mems.map((m) => `- ${m.content}`).join("\n")
+            : "（暂无长期记忆）";
+          feedRef.current.list.push({
+            kind: "assistant",
+            id: "memory-" + Date.now(),
+            content,
+          });
+          bump((n) => n + 1);
           break;
         }
         case "/compact": {
@@ -740,13 +940,26 @@ export function SessionPage() {
       );
     }
     try {
-      const next = await submitUserMessage(detail.session.id, text);
-      if (wasRunning) {
-        // 已入队：刷新排队条；feed/运行态保持不变（当前消息仍在跑）。
+      const { session: next, queued } = await submitUserMessage(detail.session.id, text);
+      if (queued) {
+        // 后端入队（不论前端先前 wasRunning 以为忙不忙）：撤掉可能的乐观气泡——消息在排队条里、
+        // 不在 feed。修复点：原先仅凭前端 wasRunning 决定是否显示气泡，但前后端「忙」态可能不一致
+        //（队列排空边界/重连那一拍），导致乐观气泡成为与排队条并存的「孤儿已送达消息」。现按后端
+        // 真实 queued 结果对账。wasRunning 为 true 时本就没插气泡，filter 为 no-op。
+        const optimisticKey = "u:" + uid;
+        feedRef.current.list = feedRef.current.list.filter((row) => rowKey(row) !== optimisticKey);
+        feedRef.current.map.delete(optimisticKey);
         void listSessionQueue(detail.session.id)
           .then(setQueuedTasks)
           .catch(() => {});
+        if (!wasRunning) {
+          // 前端先前误判空闲、已乐观置「正在思考」；校正为在飞 run 的真实运行态。
+          setBusy(next.isRunning);
+          setRunActivity(activityFromSession(next));
+        }
+        // wasRunning 时运行态本就正确，保留 live 活动标签不动。
       } else {
+        // 即时起跑：保留乐观气泡（run_finished 重建时同构替换），同步运行态。
         setBusy(next.isRunning);
         setRunActivity(activityFromSession(next));
       }
@@ -1003,6 +1216,99 @@ export function SessionPage() {
     return () => window.removeEventListener("focus", reload);
   }, []);
 
+  // 加载项目列表，供 Composer 工作上下文下拉选择项目。
+  useEffect(() => {
+    const reload = () =>
+      listProjects().then(setProjects).catch(console.error);
+    reload();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+
+  // 「桌面操作」功能总开关（全局设置）：决定是否在会话头提供入口；窗口聚焦时刷新使设置即时生效。
+  useEffect(() => {
+    const reload = () =>
+      getComputerUseEnabled()
+        .then(setComputerUseEnabled)
+        .catch(console.error);
+    reload();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+
+  // 本会话是否出现过浏览器 / 桌面工具活动：即便功能开关关着，只要确有活动也渲染真实面板（而非引导）。
+  const sidePanelActivity = useMemo(() => {
+    let browser = false;
+    let computer = false;
+    for (const r of feedRef.current.list) {
+      if (r.kind !== "tool") continue;
+      if (r.toolName === "browser") browser = true;
+      else if (r.toolName === "computer") computer = true;
+    }
+    return { browser, computer };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedVersion]);
+
+  // feed 出现「浏览器 / 桌面」工具活动时自动切到对应 tab：仅当最近一条工具行是该工具、会话运行中、
+  // 且该行未自动切过时触发——打开历史会话不误切；用户手动切走后，下一次新活动才会再切回。
+  useEffect(() => {
+    const list = feedRef.current.list;
+    let last: { id: string; tool: SidePanelTab } | null = null;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const r = list[i];
+      if (r.kind !== "tool") continue;
+      if (r.toolName === "browser") last = { id: r.id, tool: "browser" };
+      else if (r.toolName === "computer") last = { id: r.id, tool: "computer" };
+      break; // 只看最近一条工具行：当前正在操作的工具才决定切哪个 tab
+    }
+    if (!last) return;
+    if (autoSwitchedRowRef.current === last.id) return;
+    autoSwitchedRowRef.current = last.id;
+    if (busy) setSidePanelTab(last.tool);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedVersion, busy]);
+
+  // 「浏览器操作」功能总开关（全局设置）：决定是否在会话头提供入口；窗口聚焦时刷新使设置即时生效。
+  useEffect(() => {
+    const reload = () =>
+      getBrowserUseEnabled()
+        .then(setBrowserUseEnabled)
+        .catch(console.error);
+    reload();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+
+  // 加载可选团队 + 散装 agent（供 Composer 角色槽）；窗口聚焦时刷新。
+  useEffect(() => {
+    const reload = () => {
+      listActiveTeams().then(setTeams).catch(console.error);
+      listExperts().then(setRoleExperts).catch(console.error);
+      listAgents().then(setAgents).catch(console.error);
+    };
+    reload();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+
+  // 选择会话角色（kind 空串 = 自由模式）；本地更新 detail 使下拉即时反映。
+  const pickRole = async (kind: string, id: string) => {
+    if (!detail) return;
+    await setSessionRole(detail.session.id, kind, id);
+    setDetail((d) =>
+      d
+        ? {
+            ...d,
+            session: {
+              ...d.session,
+              roleKind: (kind || null) as "expert" | "team" | null,
+              roleId: id || null,
+            },
+          }
+        : d,
+    );
+  };
+
   const pickAgent = async (agentId: string) => {
     if (!detail) return;
     await setSessionAgent(detail.session.id, agentId || null);
@@ -1052,6 +1358,38 @@ export function SessionPage() {
     }
   };
 
+  const refreshWorkspaceFiles = useCallback(async () => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    setWsFilesLoading(true);
+    setWsFilesError(null);
+    try {
+      const list = await listSessionWorkspaceFiles(sid);
+      setWsFiles(list);
+    } catch (err) {
+      console.error(err);
+      setWsFilesError(String(err));
+    } finally {
+      setWsFilesLoading(false);
+    }
+  }, []);
+
+  // 工作空间 tab 自动刷新：激活或运行态变化时拉一次；运行中每 3s 轮询一次
+  //（捕捉 agent 写入但未登记为产物的文件），运行结束（busy: true→false）再刷新一次拿到最终结果。
+  useEffect(() => {
+    if (sidePanelTab !== "workspace") return;
+    void refreshWorkspaceFiles();
+    if (!busy) return;
+    const timer = setInterval(() => void refreshWorkspaceFiles(), 3000);
+    return () => clearInterval(timer);
+  }, [sidePanelTab, busy, refreshWorkspaceFiles]);
+
+  // 产物更新（新文件落盘）时，若正停留在工作空间 tab 则重拉。
+  useEffect(() => {
+    if (sidePanelTab === "workspace") void refreshWorkspaceFiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artifacts]);
+
   const handleOpenWorkspace = async () => {
     if (!detail) return;
     try {
@@ -1060,6 +1398,15 @@ export function SessionPage() {
       console.error(err);
       notify.error("打开工作目录失败：" + String(err));
     }
+  };
+
+  // 点击工作空间文件 → 右侧预览抽屉。命中已登记产物则沿用其元数据，否则用路径合成一个轻量产物
+  //（预览抽屉只依赖 path：以 read_artifact 沙箱读取该会话工作目录内文件）。
+  const handlePreviewWorkspaceFile = (relPath: string) => {
+    const existing = artifacts.find((a) => a.path === relPath);
+    setPreviewArtifact(
+      existing ?? { path: relPath, title: relPath, kind: "", createdAt: "" },
+    );
   };
 
   // 添加附件：弹文件选择器 → 纳入会话工作目录 → 返回可被 agent 访问的相对路径。
@@ -1185,17 +1532,31 @@ export function SessionPage() {
   // 子代理（child）会话：只读查看，不提供输入框；底部用占位条 + 「返回主会话」入口。
   const isSubagentSession = detail.session.origin === "subagent";
   const parentSessionId = detail.session.parentSessionId ?? null;
+  // 工具动作流的「运行中」信号：会话忙且不处于权限/反问/计划等待态。
+  const running = busy && !pending && !ask && !plan;
+  // 右侧任务面板 tab：监控常驻；浏览器/桌面仅主会话提供（子代理会话不适用）。
+  const sideTabs: SidePanelTabDef[] = [
+    { key: "monitor", label: "监控", icon: <ListChecks className="h-[14px] w-[14px]" aria-hidden="true" /> },
+    { key: "workspace", label: "工作空间", icon: <FolderTree className="h-[14px] w-[14px]" aria-hidden="true" /> },
+  ];
+  if (!isSubagentSession) {
+    sideTabs.push(
+      { key: "browser", label: "浏览器", icon: <Globe className="h-[14px] w-[14px]" aria-hidden="true" /> },
+      { key: "computer", label: "桌面", icon: <MonitorPlay className="h-[14px] w-[14px]" aria-hidden="true" /> },
+    );
+  }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-row">
+    <div className="flex h-full min-h-0 min-w-0 flex-row ">
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-        <div className="session-header flex min-w-0 items-center justify-between gap-3 px-4 py-2.5 text-sm font-semibold border-b border-border">
+        <div className="session-header flex min-w-0 items-center justify-between gap-3 px-4 py-4 text-sm font-semibold border-b border-border">
           <div className="min-w-0">
             {detail?.session.title || "会话"}
             {/* <span className="block truncate text-xs font-normal text-foreground-muted">
               {detail?.session.id}
             </span> */}
           </div>
+          {/* 桌面/浏览器面板入口已并入右侧任务面板的 tab 条（见 SessionSidePanel），此处不再放独立 toggle。 */}
           {monitorCollapsed && (
             <Tooltip content="展开任务面板">
               <button
@@ -1211,14 +1572,16 @@ export function SessionPage() {
         </div>
         
         <div className="session-body flex min-h-0 min-w-0 flex-1 flex-col">
-          <div
-            ref={feedScrollRef}
-            onScroll={handleFeedScroll}
-            className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
-          >
-            <div className="min-w-0 max-w-full px-2 pt-2">
-              <MessageFeed
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <div
+              ref={feedScrollRef}
+              onScroll={handleFeedScroll}
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
+            >
+              <div className="min-w-0 max-w-full px-2 pt-2">
+                <MessageFeed
                 sessionId={detail.session.id}
+                onAddQuote={(text) => composerRef.current?.addQuote(text)}
                 rows={feedRef.current.list}
                 streamingId={streamingIdRef.current}
                 thinking={busy && !pending && !ask && !plan}
@@ -1226,6 +1589,22 @@ export function SessionPage() {
                 onOpenArtifact={setPreviewArtifact}
                 resolvedWorkingDir={detail.resolvedWorkingDir}
                 retryDisabled={busy}
+                agentDisplayNames={agentDisplayNames}
+                onDispatchAgentClick={(toolCallId, expertName) => {
+                  // 点派发卡 → 进入该子代理会话（完整 SessionPage，可面包屑返回主会话）。
+                  void expertName;
+                  const live = childByCallRef.current.get(toolCallId);
+                  if (live) {
+                    openSession(live);
+                    return;
+                  }
+                  void findChildSession(detail.session.id, toolCallId).then(
+                    (childId) => {
+                      if (childId) openSession(childId);
+                      else notify.error("没找到该专家的子会话（可能尚未启动）");
+                    },
+                  );
+                }}
                 onRetry={() => {
                   if (!detail || busy) return;
                   setBusy(true);
@@ -1244,6 +1623,12 @@ export function SessionPage() {
                 }}
               />
             </div>
+          </div>
+            <MessageFeedNav
+              scrollRef={feedScrollRef}
+              items={feedNavItems}
+              onOpenArtifact={setPreviewArtifact}
+            />
           </div>
           {plan && (
             <SessionPlanCard plan={plan} busy={busy} onDecide={decidePlan} />
@@ -1307,6 +1692,7 @@ export function SessionPage() {
             ) : (
             <Composer
               sessionId={detail.session.id}
+              ref={composerRef}
               queuedTasks={queuedTasks}
               onCancelQueued={onCancelQueued}
               // T70：忙（busy）不再禁用输入——允许 Enter 把新消息入队；仅 pending/ask/plan 这类
@@ -1314,12 +1700,18 @@ export function SessionPage() {
               disabled={pending !== null || ask !== null || plan !== null}
               onSubmit={onSubmit}
               running={busy && !pending && !ask}
+              stopping={stopping}
               onStop={() => {
-                if (detail) stopSession(detail.session.id).catch(console.error);
+                if (!detail) return;
+                setStopping(true); // 乐观：立即进入「停止中」，不等后端撞检查点
+                stopSession(detail.session.id).catch(console.error);
               }}
               workspaceName={wsName}
               workspaceLocked={!!detail?.session.projectId}
               workspacePath={detail?.resolvedWorkingDir}
+              projects={projects}
+              selectedProjectId={detail?.session.projectId ?? null}
+              onPickProject={(projectId) => enterDraftWithProject(projectId)}
               agents={agents}
               selectedAgentId={sessionAgentId}
               onPickAgent={(id) => void pickAgent(id)}
@@ -1329,6 +1721,11 @@ export function SessionPage() {
               modelGroups={modelGroups}
               selectedModelId={detail?.session.selectedModelId ?? null}
               onPickModel={(id) => void pickModel(id)}
+              teams={teams}
+              roleExperts={roleExperts}
+              roleKind={detail?.session.roleKind ?? ""}
+              roleId={detail?.session.roleId ?? ""}
+              onPickRole={(detail?.session.projectId || sessionAgentId) ? undefined : (k, i) => void pickRole(k, i)}
               planMode={detail?.session.mode === "plan"}
               onTogglePlan={() => void togglePlan()}
               permissionMode={detail?.session.permissionMode ?? null}
@@ -1348,21 +1745,79 @@ export function SessionPage() {
           </div>
         </div>
       </div>
+      {/* 右侧任务面板：监控 / 浏览器 / 桌面合并为一块，按 tab 切换；操作浏览器/桌面时自动切到对应 tab。 */}
       <div
         aria-hidden={monitorCollapsed}
         className={`h-full min-h-0 shrink-0 overflow-hidden transition-[width,opacity] duration-150 ${
-          monitorCollapsed ? "pointer-events-none w-0 opacity-0" : "w-[300px] opacity-100"
+          monitorCollapsed ? "pointer-events-none w-0 opacity-0" : "w-[320px] opacity-100"
         }`}
       >
-        <SessionMonitorPanel
-          todos={todos}
-          workspaceLabel={wsLabel}
-          workspacePath={detail?.resolvedWorkingDir}
+        <SessionSidePanel
+          tab={sidePanelTab}
+          tabs={sideTabs}
+          onTab={setSidePanelTab}
           onCollapse={() => setCollapsedMonitorSessionId(detail.session.id)}
-          onOpenWorkspace={handleOpenWorkspace}
-          artifacts={artifacts}
-          onOpenArtifact={setPreviewArtifact}
-        />
+        >
+          {sidePanelTab === "monitor" && (
+            <SessionMonitorPanel
+              embedded
+              todos={todos}
+              childAgents={childAgents}
+              childSteps={childSteps}
+              onOpenChildAgent={(id) => openSession(id)}
+              onCancelChildAgent={(id) => {
+                void cancelChild(id)
+                  .then(() => {
+                    const sid = sessionIdRef.current;
+                    if (sid) void listSessionChildren(sid).then(setChildAgents);
+                  })
+                  .catch((err) => notify.notify({ tone: "error", title: "取消失败", message: String(err) }));
+              }}
+              onCollapse={() => setCollapsedMonitorSessionId(detail.session.id)}
+              sessionId={detail.session.id}
+              projectId={isSubagentSession ? undefined : (detail?.session.projectId ?? undefined)}
+              teamId={isSubagentSession ? undefined : (detail?.session.roleKind === "team" ? (detail?.session.roleId ?? undefined) : undefined)}
+            />
+          )}
+          {sidePanelTab === "workspace" && (
+            <WorkspaceTab
+              workspaceLabel={wsLabel}
+              workspacePath={detail?.resolvedWorkingDir}
+              files={wsFiles}
+              truncated={wsFiles.length >= 200}
+              loading={wsFilesLoading}
+              error={wsFilesError}
+              artifacts={artifacts}
+              onOpenDir={handleOpenWorkspace}
+              onPreviewFile={handlePreviewWorkspaceFile}
+              onRefresh={() => void refreshWorkspaceFiles()}
+            />
+          )}
+          {sidePanelTab === "browser" && !isSubagentSession &&
+            (browserUseEnabled || sidePanelActivity.browser ? (
+              <BrowserPanel
+                embedded
+                sessionId={detail.session.id}
+                rows={feedRef.current.list}
+                feedVersion={feedVersion}
+                running={running}
+              />
+            ) : (
+              <FeatureOffHint name="浏览器操作" />
+            ))}
+          {sidePanelTab === "computer" && !isSubagentSession &&
+            (computerUseEnabled || sidePanelActivity.computer ? (
+              <ComputerPanel
+                embedded
+                sessionId={detail.session.id}
+                rows={feedRef.current.list}
+                feedVersion={feedVersion}
+                running={running}
+              />
+            ) : (
+              <FeatureOffHint name="桌面操作" />
+            ))}
+        </SessionSidePanel>
       </div>
       <ArtifactPreviewDrawer
         sessionId={detail.session.id}

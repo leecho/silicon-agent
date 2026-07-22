@@ -81,26 +81,81 @@ export function buildPersistedRows(messages: Message[], showProcess = true): Fee
   return rows;
 }
 
-// 渲染期分组：把连续的 tool 行合并成一个 toolGroup，遇非 tool 行断组（单条 tool 也成组）。
-export type GroupedFeedRow =
-  | Exclude<FeedRow, { kind: "tool" }>
-  | {
-      kind: "toolGroup";
-      id: string;
-      steps: Array<Extract<FeedRow, { kind: "tool" }>>;
-    };
+// 过程区内的时间线项：思考 / 旁白（中间 assistant 文本）/ 工具。
+export type ProcessItem =
+  | { kind: "thinking"; id: string; text: string }
+  | { kind: "narration"; id: string; text: string }
+  | Extract<FeedRow, { kind: "tool" }>;
 
+// 渲染期分组行：assistant/tool 被聚合；其余行原样透传。
+// processGroup = 一轮内除最终答案外的思考/旁白/工具；answer = 最终答案（常驻）。
+export type GroupedFeedRow =
+  | Exclude<FeedRow, { kind: "tool" | "assistant" }>
+  | { kind: "answer"; id: string; reasoning?: string; content: string }
+  | { kind: "processGroup"; id: string; items: ProcessItem[] };
+
+// 轮感知分组：以 user/divider/error/askAnswer 为边界把 {assistant,tool} 聚成 bucket，
+// 再拆成 [过程区, 最终答案]。最终答案 = bucket 末条「非空 content 的 assistant」；
+// 其余（更早 reasoning + 旁白 + 全部工具）摊平进过程区；过程区为空则不产出。
 export function groupRows(rows: FeedRow[]): GroupedFeedRow[] {
   const out: GroupedFeedRow[] = [];
-  let bucket: Array<Extract<FeedRow, { kind: "tool" }>> = [];
+  let bucket: Array<Extract<FeedRow, { kind: "assistant" | "tool" }>> = [];
+
   const flush = () => {
-    if (bucket.length > 0) {
-      out.push({ kind: "toolGroup", id: "g:" + bucket[0].id, steps: bucket });
-      bucket = [];
+    if (bucket.length === 0) return;
+
+    // 最终答案：bucket 最后一条且为非空 content 的 assistant（一轮正常以答案收尾）。
+    // 末条是工具或空 content assistant（运行中/以工具收尾）→ 无最终答案，全进过程区。
+    const last = bucket[bucket.length - 1];
+    const hasAnswer = last.kind === "assistant" && last.content.length > 0;
+    const answerIdx = hasAnswer ? bucket.length - 1 : -1;
+
+    const items: ProcessItem[] = [];
+    for (let i = 0; i < bucket.length; i++) {
+      if (i === answerIdx) continue; // 最终答案的 content 不进过程区（其 reasoning 见下）
+      const r = bucket[i];
+      if (r.kind === "tool") {
+        items.push(r);
+      } else {
+        if (r.reasoning && r.reasoning.length > 0) {
+          items.push({ kind: "thinking", id: r.id, text: r.reasoning });
+        }
+        if (r.content.length > 0) {
+          items.push({ kind: "narration", id: r.id, text: r.content });
+        }
+      }
     }
+
+    const answer =
+      answerIdx >= 0
+        ? (bucket[answerIdx] as Extract<FeedRow, { kind: "assistant" }>)
+        : null;
+
+    // 最终答案的思考：若本轮已有过程内容，则并入过程区末尾（避免答案上方悬一个孤立
+    // 「深度思考」折叠）；否则（无工具无旁白的简单轮）保留为答案自带的折叠行。
+    let answerReasoning = answer?.reasoning;
+    if (answer && items.length > 0 && answer.reasoning && answer.reasoning.length > 0) {
+      items.push({ kind: "thinking", id: answer.id, text: answer.reasoning });
+      answerReasoning = undefined;
+    }
+
+    if (items.length > 0) {
+      out.push({ kind: "processGroup", id: "p:" + bucket[0].id, items });
+    }
+    if (answer) {
+      out.push({
+        kind: "answer",
+        id: answer.id,
+        reasoning: answerReasoning,
+        content: answer.content,
+      });
+    }
+
+    bucket = [];
   };
+
   for (const row of rows) {
-    if (row.kind === "tool") {
+    if (row.kind === "tool" || row.kind === "assistant") {
       bucket.push(row);
     } else {
       flush();

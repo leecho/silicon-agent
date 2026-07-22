@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 打包用 hardened runtime；无此 entitlement 时 AppleEvents 即使 TCC 已授权也被系统拦截，
+	     导致「自动化」永远不可用。dev 不开 hardened runtime，故仅打包路径需要它。 -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

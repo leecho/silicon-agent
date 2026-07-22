@@ -1,6 +1,6 @@
 use crate::provider::adapter::{
     authorization_header_value, build_chat_completion_body, classify_status,
-    emit_stream_line_delta, friendly_error_message, stream_read_timeout_ms, ToolCallStreamAcc,
+    emit_stream_line_delta, friendly_error_message, ToolCallStreamAcc,
 };
 use crate::provider::client::{ModelCallRequest, ModelEvent};
 use crate::provider::message::{
@@ -32,6 +32,7 @@ fn context_limit_for_prefers_configured_then_table() {
                 base_url: "http://x/v1".into(),
                 api_key: Some("sk-aaaa1111".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "1",
         )
@@ -48,11 +49,48 @@ fn context_limit_for_prefers_configured_then_table() {
             display_name: None,
             enabled: true,
             context_limit: Some(64_000),
+            supports_vision: None,
         },
         "1",
     )
     .unwrap();
     assert_eq!(gw.context_limit_for("claude-custom"), 64_000);
+}
+
+#[test]
+fn supports_vision_for_prefers_override_then_table() {
+    let gw = temp_gateway();
+    let p = gw
+        .upsert_provider(
+            ProviderInput {
+                id: None,
+                name: "P".into(),
+                base_url: "http://x/v1".into(),
+                api_key: Some("sk-aaaa1111".into()),
+                enabled: true,
+                protocol: "openai".into(),
+            },
+            "1",
+        )
+        .unwrap();
+    // 无覆盖 → 内置查表：deepseek-chat=false、gpt-4o=true。
+    assert!(!gw.supports_vision_for("deepseek-chat"));
+    assert!(gw.supports_vision_for("gpt-4o"));
+    // 加一个 deepseek-chat 模型并强制覆盖 supports_vision = true。
+    gw.upsert_model(
+        ModelInput {
+            id: None,
+            provider_id: p.id.clone(),
+            model: "deepseek-chat".into(),
+            display_name: None,
+            enabled: true,
+            context_limit: None,
+            supports_vision: Some(true),
+        },
+        "1",
+    )
+    .unwrap();
+    assert!(gw.supports_vision_for("deepseek-chat"));
 }
 
 #[test]
@@ -110,13 +148,6 @@ fn http_429_and_5xx_classify_transient_others_terminal() {
     assert_eq!(classify_status(408), ProviderErrorClass::Transient);
     assert_eq!(classify_status(401), ProviderErrorClass::Terminal);
     assert_eq!(classify_status(400), ProviderErrorClass::Terminal);
-}
-
-#[test]
-fn stream_read_timeout_uses_request_timeout_then_idle_default() {
-    // 流式读超时即 idle 超时：优先用 request.timeout_ms，缺省 60s。
-    assert_eq!(stream_read_timeout_ms(Some(30_000)), 30_000);
-    assert_eq!(stream_read_timeout_ms(None), 60_000);
 }
 
 #[test]
@@ -310,6 +341,7 @@ fn provider_model_crud_and_default_resolution() {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("sk-test1234".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "1",
         )
@@ -327,6 +359,7 @@ fn provider_model_crud_and_default_resolution() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1",
         )
@@ -340,6 +373,7 @@ fn provider_model_crud_and_default_resolution() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1",
         )
@@ -380,6 +414,7 @@ fn deleting_model_clears_default_reference() {
                 base_url: "http://x/v1".into(),
                 api_key: Some("sk-zzzz9999".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "1",
         )
@@ -393,6 +428,7 @@ fn deleting_model_clears_default_reference() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1",
         )
@@ -414,6 +450,7 @@ fn delete_provider_cascades_models_and_clears_refs() {
                 base_url: "http://x/v1".into(),
                 api_key: Some("sk-aaaa1111".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "1",
         )
@@ -427,6 +464,7 @@ fn delete_provider_cascades_models_and_clears_refs() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1",
         )
@@ -440,6 +478,7 @@ fn delete_provider_cascades_models_and_clears_refs() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1",
         )
@@ -466,6 +505,7 @@ fn set_default_model_unknown_id_errors_and_preserves_default() {
                 base_url: "http://x/v1".into(),
                 api_key: Some("sk-aaaa1111".into()),
                 enabled: true,
+                protocol: "openai".into(),
             },
             "1",
         )
@@ -479,6 +519,7 @@ fn set_default_model_unknown_id_errors_and_preserves_default() {
                 display_name: None,
                 enabled: true,
                 context_limit: None,
+                supports_vision: None,
             },
             "1",
         )
@@ -601,4 +642,42 @@ fn fallback_id_migrates_from_legacy_app_settings_on_open() {
         gw2.get_fallback_model_id().unwrap(),
         Some("mdl_legacy_fb".to_string())
     );
+}
+
+#[test]
+fn upsert_provider_persists_protocol_and_defaults_openai() {
+    let gw = temp_gateway();
+    // 显式 anthropic
+    let a = gw
+        .upsert_provider(
+            ProviderInput {
+                id: None,
+                name: "Claude".into(),
+                base_url: "https://api.anthropic.com".into(),
+                api_key: Some("sk-ant-xxxx".into()),
+                enabled: true,
+                protocol: "anthropic".into(),
+            },
+            "1",
+        )
+        .unwrap();
+    assert_eq!(a.protocol, "anthropic");
+    // 空协议 → 回退 openai
+    let b = gw
+        .upsert_provider(
+            ProviderInput {
+                id: None,
+                name: "Other".into(),
+                base_url: "http://x/v1".into(),
+                api_key: Some("sk-bbbb".into()),
+                enabled: true,
+                protocol: "".into(),
+            },
+            "1",
+        )
+        .unwrap();
+    assert_eq!(b.protocol, "openai");
+    // list 回读一致
+    let listed = gw.list_providers().unwrap();
+    assert!(listed.iter().any(|p| p.id == a.id && p.protocol == "anthropic"));
 }
